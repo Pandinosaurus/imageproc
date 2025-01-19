@@ -1,8 +1,6 @@
 //! Functions for adding synthetic noise to images.
 
 use crate::definitions::{Clamp, HasBlack, HasWhite, Image};
-use crate::math::cast;
-use conv::ValueInto;
 use image::Pixel;
 use rand::{rngs::StdRng, SeedableRng};
 use rand_distr::{Distribution, Normal, Uniform};
@@ -12,19 +10,17 @@ use rand_distr::{Distribution, Normal, Uniform};
 pub fn gaussian_noise<P>(image: &Image<P>, mean: f64, stddev: f64, seed: u64) -> Image<P>
 where
     P: Pixel,
-    P::Subpixel: ValueInto<f64> + Clamp<f64>,
+    P::Subpixel: Into<f64> + Clamp<f64>,
 {
     let mut out = image.clone();
     gaussian_noise_mut(&mut out, mean, stddev, seed);
     out
 }
-
-/// Adds independent additive Gaussian noise to all channels
-/// of an image in place, with the given mean and standard deviation.
+#[doc=generate_mut_doc_comment!("gaussian_noise")]
 pub fn gaussian_noise_mut<P>(image: &mut Image<P>, mean: f64, stddev: f64, seed: u64)
 where
     P: Pixel,
-    P::Subpixel: ValueInto<f64> + Clamp<f64>,
+    P::Subpixel: Into<f64> + Clamp<f64>,
 {
     let mut rng: StdRng = SeedableRng::seed_from_u64(seed);
     let normal = Normal::new(mean, stddev).unwrap();
@@ -32,7 +28,7 @@ where
     for p in image.pixels_mut() {
         for c in p.channels_mut() {
             let noise = normal.sample(&mut rng);
-            *c = P::Subpixel::clamp(cast(*c) + noise);
+            *c = P::Subpixel::clamp((*c).into() + noise);
         }
     }
 }
@@ -47,9 +43,7 @@ where
     salt_and_pepper_noise_mut(&mut out, rate, seed);
     out
 }
-
-/// Converts pixels to black or white in place at the given `rate` (between 0.0 and 1.0).
-/// Black and white occur with equal probability.
+#[doc=generate_mut_doc_comment!("salt_and_pepper_noise")]
 pub fn salt_and_pepper_noise_mut<P>(image: &mut Image<P>, rate: f64, seed: u64)
 where
     P: Pixel + HasBlack + HasWhite,
@@ -66,8 +60,9 @@ where
     }
 }
 
+#[cfg(not(miri))]
 #[cfg(test)]
-mod tests {
+mod benches {
     use super::*;
     use image::GrayImage;
     use test::{black_box, Bencher};

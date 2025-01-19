@@ -1,10 +1,11 @@
 //! Functions for finding and labelling connected components of an image.
 
-use image::{GenericImage, GenericImageView, ImageBuffer, Luma};
+use std::cmp;
+
+use image::{GenericImage, GenericImageView, Luma};
 
 use crate::definitions::Image;
 use crate::union_find::DisjointSetForest;
-use std::cmp;
 
 /// Determines which neighbors of a pixel we consider
 /// to be connected to it.
@@ -102,10 +103,10 @@ pub enum Connectivity {
 ///
 /// // If this behaviour is not what you want then you can first
 /// // threshold the input image.
-/// use imageproc::contrast::threshold;
+/// use imageproc::contrast::{threshold, ThresholdType};
 ///
 /// // Pixels equal to the threshold are treated as background.
-/// let thresholded = threshold(&image, 0);
+/// let thresholded = threshold(&image, 0,ThresholdType::Binary);
 ///
 /// let thresholded_components_four = gray_image!(type: u32,
 ///     1, 0, 2, 2;
@@ -133,7 +134,7 @@ where
         panic!("Images with 2^32 or more pixels are not supported");
     }
 
-    let mut out = ImageBuffer::new(width, height);
+    let mut out = Image::new(width, height);
 
     // TODO: add macro to abandon early if either dimension is zero
     if width == 0 || height == 0 {
@@ -200,7 +201,7 @@ where
                 }
                 next_label += 1;
             } else {
-                let mut min_label = u32::max_value();
+                let mut min_label = u32::MAX;
                 for n in 0..num_adj {
                     min_label = cmp::min(min_label, adj_labels[n]);
                 }
@@ -246,13 +247,14 @@ where
 mod tests {
     extern crate wasm_bindgen_test;
 
-    use super::connected_components;
-    use super::Connectivity::{Eight, Four};
-    use crate::definitions::{HasBlack, HasWhite};
-    use ::test;
-    use image::{GrayImage, ImageBuffer, Luma};
+    use image::{GrayImage, Luma};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::*;
+
+    use crate::definitions::{HasBlack, HasWhite};
+
+    use super::connected_components;
+    use super::Connectivity::{Eight, Four};
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
@@ -274,13 +276,13 @@ mod tests {
     }
 
     // One huge component with eight-way connectivity, loads of
-    // isolated components with four-way conectivity.
-    fn chessboard(width: u32, height: u32) -> GrayImage {
-        ImageBuffer::from_fn(width, height, |x, y| {
+    // isolated components with four-way connectivity.
+    pub(super) fn chessboard(width: u32, height: u32) -> GrayImage {
+        GrayImage::from_fn(width, height, |x, y| {
             if (x + y) % 2 == 0 {
-                return Luma([255u8]);
+                Luma([255u8])
             } else {
-                return Luma([0u8]);
+                Luma([0u8])
             }
         })
     }
@@ -302,6 +304,17 @@ mod tests {
         let max_component = components.pixels().map(|p| p[0]).max();
         assert_eq!(max_component, Some(450u32));
     }
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod benches {
+    use super::connected_components;
+    use super::tests::chessboard;
+    use super::Connectivity::{Eight, Four};
+    use crate::definitions::HasBlack;
+    use ::test;
+    use image::Luma;
 
     #[bench]
     fn bench_connected_components_eight_chessboard(b: &mut test::Bencher) {

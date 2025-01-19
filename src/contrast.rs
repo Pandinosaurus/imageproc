@@ -1,22 +1,25 @@
 //! Functions for manipulating the contrast of images.
 
-use crate::definitions::{HasBlack, HasWhite};
-use crate::integral_image::{integral_image, sum_image_pixels};
-use crate::stats::{cumulative_histogram, histogram};
-use image::{GrayImage, ImageBuffer, Luma};
+use std::cmp::{max, min};
+
+use image::{GrayImage, Luma, Pixel};
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
-use std::cmp::{max, min};
+
+use crate::definitions::{HasBlack, HasWhite, Image};
+use crate::integral_image::{integral_image, sum_image_pixels};
+use crate::map::map_pixels_mut;
+use crate::stats::{cumulative_histogram, histogram};
 
 /// Applies an adaptive threshold to an image.
 ///
 /// This algorithm compares each pixel's brightness with the average brightness of the pixels
-/// in the (2 * `block_radius` + 1) square block centered on it. If the pixel is at least as bright
+/// in the (2 * `block_radius` + 1) square block centered on it minus delta. If the pixel is at least as bright
 /// as the threshold then it will have a value of 255 in the output image, otherwise 0.
-pub fn adaptive_threshold(image: &GrayImage, block_radius: u32) -> GrayImage {
+pub fn adaptive_threshold(image: &GrayImage, block_radius: u32, delta: i32) -> GrayImage {
     assert!(block_radius > 0);
     let integral = integral_image::<_, u32>(image);
-    let mut out = ImageBuffer::from_pixel(image.width(), image.height(), Luma::black());
+    let mut out = GrayImage::from_pixel(image.width(), image.height(), Luma::black());
 
     for y in 0..image.height() {
         for x in 0..image.width() {
@@ -35,7 +38,7 @@ pub fn adaptive_threshold(image: &GrayImage, block_radius: u32) -> GrayImage {
             let w = (y_high - y_low + 1) * (x_high - x_low + 1);
             let mean = sum_image_pixels(&integral, x_low, y_low, x_high, y_high)[0] / w;
 
-            if current_pixel[0] as u32 >= mean as u32 {
+            if current_pixel[0] as i32 >= mean as i32 - delta {
                 out.put_pixel(x, y, Luma::white());
             }
         }
@@ -99,9 +102,90 @@ pub fn otsu_level(image: &GrayImage) -> u8 {
     best_threshold
 }
 
-/// Returns a binarized image from an input 8bpp grayscale image
-/// obtained by applying the given threshold. Pixels with intensity
-/// equal to the threshold are assigned to the background.
+/// Returns the [Kapur threshold level] of an 8bpp image. This threshold
+/// maximizes the entropy of the background and foreground.
+///
+/// [Kapur threshold level]: https://doi.org/10.1016/0734-189X(85)90125-2
+pub fn kapur_level(img: &GrayImage) -> u8 {
+    // The implementation looks different to the one you can for example find in
+    // ImageMagick, because we are using the simplification of equation (18) in
+    // the original article, which allows the computation of the total entropy
+    // without having to use nested loops. The names of the variables are taken
+    // straight from the article.
+    let hist = histogram(img);
+    let histogram = &hist.channels[0];
+    const N: usize = 256;
+
+    let total_pixels = (img.width() * img.height()) as f64;
+
+    // The p_i in the article. They describe the probability of encountering
+    // gray-level i.
+    let mut p = [0.0f64; N];
+    for i in 0..N {
+        p[i] = histogram[i] as f64 / total_pixels;
+    }
+
+    // The P_s in the article, which is the probability of encountering
+    // gray-level <= s.
+    let mut cum_p = [0.0f64; N];
+    cum_p[0] = p[0];
+    for i in 1..N {
+        cum_p[i] = cum_p[i - 1] + p[i];
+    }
+
+    // The H_s in the article. These are the entropies attached to the
+    // distributions p[0],...,p[s].
+    let mut h = [0.0f64; N];
+    if p[0] > 0.0 {
+        h[0] = -p[0] * p[0].ln();
+    }
+    for s in 1..N {
+        h[s] = if p[s] > 0.0 {
+            h[s - 1] - p[s] * p[s].ln()
+        } else {
+            h[s - 1]
+        };
+    }
+
+    let mut max_entropy = f64::MIN;
+    let mut best_threshold = 0;
+
+    for s in 0..N {
+        let pq = cum_p[s] * (1.0 - cum_p[s]);
+        if pq <= 0.0 {
+            continue;
+        }
+
+        // psi_s is the sum of the total entropy of foreground and
+        // background at threshold level s. Instead of computing them
+        // separately, we use equation (18) of the original article, which
+        // simplifies it to this:
+        let psi_s = pq.ln() + h[s] / cum_p[s] + (h[255] - h[s]) / (1.0 - cum_p[s]);
+        if psi_s > max_entropy {
+            max_entropy = psi_s;
+            best_threshold = s;
+        }
+    }
+
+    best_threshold as u8
+}
+
+/// Options for how to treat the threshold value in [`threshold`] and [`threshold_mut`].
+pub enum ThresholdType {
+    /// `dst(x,y) = if src(x,y) > threshold { 255 } else { 0 }`
+    Binary,
+    /// `dst(x,y) = if src(x,y) > threshold { 0 } else { 255 }`
+    BinaryInverted,
+    /// `dst(x,y) = if src(x,y) > threshold { threshold } else { src(x,y) }`
+    Truncate,
+    /// `dst(x,y) = if src(x,y) > threshold { src(x,y) } else { 0 }`
+    ToZero,
+    /// `dst(x,y) = if src(x,y) > threshold { 0 } else { src(x,y) }`
+    ToZeroInverted,
+}
+
+/// Applies a threshold to each pixel in a grayscale image. The action taken depends on
+/// `threshold_type` - see [`ThresholdType`].
 ///
 /// # Examples
 /// ```
@@ -109,58 +193,102 @@ pub fn otsu_level(image: &GrayImage) -> u8 {
 /// # #[macro_use]
 /// # extern crate imageproc;
 /// # fn main() {
-/// use imageproc::contrast::threshold;
+/// use imageproc::contrast::{threshold, ThresholdType};
 ///
 /// let image = gray_image!(
 ///     10, 80, 20;
 ///     50, 90, 70);
 ///
-/// let thresholded = gray_image!(
+/// // Binary threshold
+/// let threshold_binary = gray_image!(
 ///     0, 255,   0;
 ///     0, 255, 255);
 ///
-/// assert_pixels_eq!(threshold(&image, 50), thresholded);
+/// assert_pixels_eq!(
+///     threshold(&image, 50, ThresholdType::Binary),
+///     threshold_binary);
+///
+/// // Inverted binary threshold
+/// let threshold_binary_inverted = gray_image!(
+///     255,   0, 255;
+///     255,   0,   0);
+///
+/// assert_pixels_eq!(
+///     threshold(&image, 50, ThresholdType::BinaryInverted),
+///     threshold_binary_inverted);
+///
+/// // Truncate
+/// let threshold_truncate = gray_image!(
+///     10, 50, 20;
+///     50, 50, 50);
+///
+/// assert_pixels_eq!(
+///     threshold(&image, 50, ThresholdType::Truncate),
+///     threshold_truncate);
+///
+/// // To zero
+/// let threshold_to_zero = gray_image!(
+///     10,  0, 20;
+///     50,  0,  0);
+///
+/// assert_pixels_eq!(
+///     threshold(&image, 50, ThresholdType::ToZero),
+///     threshold_to_zero);
+///
+/// // To zero inverted
+/// let threshold_to_zero_inverted = gray_image!(
+///     0, 80,  0;
+///     0, 90, 70);
+///
+/// assert_pixels_eq!(
+///     threshold(&image, 50, ThresholdType::ToZeroInverted),
+///     threshold_to_zero_inverted);
 /// # }
 /// ```
-pub fn threshold(image: &GrayImage, thresh: u8) -> GrayImage {
+pub fn threshold(image: &GrayImage, threshold: u8, threshold_type: ThresholdType) -> GrayImage {
     let mut out = image.clone();
-    threshold_mut(&mut out, thresh);
+    threshold_mut(&mut out, threshold, threshold_type);
     out
 }
-
-/// Mutates given image to form a binarized version produced by applying
-/// the given threshold. Pixels with intensity
-/// equal to the threshold are assigned to the background.
-///
-/// # Examples
-/// ```
-/// # extern crate image;
-/// # #[macro_use]
-/// # extern crate imageproc;
-/// # fn main() {
-/// use imageproc::contrast::threshold_mut;
-///
-/// let mut image = gray_image!(
-///     10, 80, 20;
-///     50, 90, 70);
-///
-/// let thresholded = gray_image!(
-///     0, 255,   0;
-///     0, 255, 255);
-///
-/// threshold_mut(&mut image, 50);
-///
-/// assert_pixels_eq!(image, thresholded);
-/// # }
-/// ```
-pub fn threshold_mut(image: &mut GrayImage, thresh: u8) {
-    for p in image.iter_mut() {
-        *p = if *p <= thresh { 0 } else { 255 };
+#[doc=generate_mut_doc_comment!("threshold")]
+pub fn threshold_mut(image: &mut GrayImage, threshold: u8, threshold_type: ThresholdType) {
+    match threshold_type {
+        ThresholdType::Binary => {
+            for p in image.iter_mut() {
+                *p = if *p > threshold { 255 } else { 0 };
+            }
+        }
+        ThresholdType::BinaryInverted => {
+            for p in image.iter_mut() {
+                *p = if *p > threshold { 0 } else { 255 };
+            }
+        }
+        ThresholdType::Truncate => {
+            for p in image.iter_mut() {
+                *p = if *p > threshold { threshold } else { *p };
+            }
+        }
+        ThresholdType::ToZero => {
+            for p in image.iter_mut() {
+                *p = if *p > threshold { 0 } else { *p };
+            }
+        }
+        ThresholdType::ToZeroInverted => {
+            for p in image.iter_mut() {
+                *p = if *p > threshold { *p } else { 0 };
+            }
+        }
     }
 }
 
-/// Equalises the histogram of an 8bpp grayscale image in place. See also
+/// Equalises the histogram of an 8bpp grayscale image. See also
 /// [histogram equalization (wikipedia)](https://en.wikipedia.org/wiki/Histogram_equalization).
+pub fn equalize_histogram(image: &GrayImage) -> GrayImage {
+    let mut out = image.clone();
+    equalize_histogram_mut(&mut out);
+    out
+}
+#[doc=generate_mut_doc_comment!("equalize_histogram")]
 pub fn equalize_histogram_mut(image: &mut GrayImage) {
     let hist = cumulative_histogram(image).channels[0];
     let total = hist[255] as f32;
@@ -182,24 +310,102 @@ pub fn equalize_histogram_mut(image: &mut GrayImage) {
     });
 }
 
-/// Equalises the histogram of an 8bpp grayscale image. See also
-/// [histogram equalization (wikipedia)](https://en.wikipedia.org/wiki/Histogram_equalization).
-pub fn equalize_histogram(image: &GrayImage) -> GrayImage {
+/// Stretches the contrast in an image, linearly mapping intensities in `(input_lower, input_upper)` to `(output_lower, output_upper)` and saturating
+/// values outside this input range.
+///
+/// # Examples
+/// ```
+/// # extern crate image;
+/// # #[macro_use]
+/// # extern crate imageproc;
+/// # fn main() {
+/// use imageproc::contrast::stretch_contrast;
+///
+/// let image = gray_image!(
+///      0,   20,  50;
+///     80,  100, 255);
+///
+/// let lower = 20;
+/// let upper = 100;
+///
+/// // Pixel intensities between 20 and 100 are linearly
+/// // scaled so that 20 is mapped to 0 and 100 is mapped to 255.
+/// // Pixel intensities less than 20 are sent to 0 and pixel
+/// // intensities greater than 100 are sent to 255.
+/// let stretched = stretch_contrast(&image, lower, upper, 0u8, 255u8);
+///
+/// let expected = gray_image!(
+///       0,   0,  95;
+///     191, 255, 255);
+///
+/// assert_pixels_eq!(stretched, expected);
+/// # }
+/// ```
+///
+/// # Panics
+/// If `input_lower >= input_upper` or `output_lower > output_upper`.
+pub fn stretch_contrast<P>(
+    image: &Image<P>,
+    input_lower: u8,
+    input_upper: u8,
+    output_lower: u8,
+    output_upper: u8,
+) -> Image<P>
+where
+    P: Pixel<Subpixel = u8>,
+{
     let mut out = image.clone();
-    equalize_histogram_mut(&mut out);
+    stretch_contrast_mut(
+        &mut out,
+        input_lower,
+        input_upper,
+        output_lower,
+        output_upper,
+    );
     out
 }
+#[doc=generate_mut_doc_comment!("stretch_contrast")]
+pub fn stretch_contrast_mut<P>(
+    image: &mut Image<P>,
+    input_min: u8,
+    input_max: u8,
+    output_min: u8,
+    output_max: u8,
+) where
+    P: Pixel<Subpixel = u8>,
+{
+    assert!(
+        input_min < input_max,
+        "input_min must be smaller than input_max"
+    );
+    assert!(
+        output_min <= output_max,
+        "output_min must be smaller or equal to output_max"
+    );
 
-/// Adjusts contrast of an 8bpp grayscale image in place so that its
-/// histogram is as close as possible to that of the target image.
-pub fn match_histogram_mut(image: &mut GrayImage, target: &GrayImage) {
-    let image_histc = cumulative_histogram(image).channels[0];
-    let target_histc = cumulative_histogram(target).channels[0];
-    let lut = histogram_lut(&image_histc, &target_histc);
+    let input_min: u16 = input_min.into();
+    let input_max: u16 = input_max.into();
+    let output_min: u16 = output_min.into();
+    let output_max: u16 = output_max.into();
 
-    for p in image.iter_mut() {
-        *p = lut[*p as usize] as u8;
-    }
+    let input_width = input_max - input_min;
+    let output_width = output_max - output_min;
+
+    let f = |p: P| {
+        p.map_without_alpha(|c| {
+            let c = u16::from(c);
+
+            if c <= input_min {
+                (output_min) as u8
+            } else if c >= input_max {
+                (output_max) as u8
+            } else {
+                ((((c - input_min) * output_width) / input_width) + output_min) as u8
+            }
+        })
+    };
+
+    map_pixels_mut(image, f);
 }
 
 /// Adjusts contrast of an 8bpp grayscale image so that its
@@ -208,6 +414,16 @@ pub fn match_histogram(image: &GrayImage, target: &GrayImage) -> GrayImage {
     let mut out = image.clone();
     match_histogram_mut(&mut out, target);
     out
+}
+#[doc=generate_mut_doc_comment!("match_histogram")]
+pub fn match_histogram_mut(image: &mut GrayImage, target: &GrayImage) {
+    let image_histc = cumulative_histogram(image).channels[0];
+    let target_histc = cumulative_histogram(target).channels[0];
+    let lut = histogram_lut(&image_histc, &target_histc);
+
+    for p in image.iter_mut() {
+        *p = lut[*p as usize] as u8;
+    }
 }
 
 /// `l = histogram_lut(s, t)` is chosen so that `target_histc[l[i]] / sum(target_histc)`
@@ -246,76 +462,18 @@ fn histogram_lut(source_histc: &[u32; 256], target_histc: &[u32; 256]) -> [usize
     lut
 }
 
-/// Linearly stretches the contrast in an image, sending `lower` to `0u8` and `upper` to `2558u8`.
-///
-/// Is it common to choose `upper` and `lower` values using image percentiles - see [`percentile`](../stats/fn.percentile.html).
-///
-/// # Examples
-/// ```
-/// # extern crate image;
-/// # #[macro_use]
-/// # extern crate imageproc;
-/// # fn main() {
-/// use imageproc::contrast::stretch_contrast;
-///
-/// let image = gray_image!(
-///      0,   20,  50;
-///     80,  100, 255);
-///
-/// let lower = 20;
-/// let upper = 100;
-///
-/// // Pixel intensities between 20 and 100 are linearly
-/// // scaled so that 20 is mapped to 0 and 100 is mapped to 255.
-/// // Pixel intensities less than 20 are sent to 0 and pixel
-/// // intensities greater than 100 are sent to 255.
-/// let stretched = stretch_contrast(&image, lower, upper);
-///
-/// let expected = gray_image!(
-///       0,   0,  95;
-///     191, 255, 255);
-///
-/// assert_pixels_eq!(stretched, expected);
-/// # }
-/// ```
-pub fn stretch_contrast(image: &GrayImage, lower: u8, upper: u8) -> GrayImage {
-    let mut out = image.clone();
-    stretch_contrast_mut(&mut out, lower, upper);
-    out
-}
-
-/// Linearly stretches the contrast in an image in place, sending `lower` to `0u8` and `upper` to `2558u8`.
-///
-/// See the [`stretch_contrast`](fn.stretch_contrast.html) documentation for more.
-pub fn stretch_contrast_mut(image: &mut GrayImage, lower: u8, upper: u8) {
-    assert!(upper > lower, "upper must be strictly greater than lower");
-    let len = (upper - lower) as u16;
-    for p in image.iter_mut() {
-        if *p >= upper {
-            *p = 255;
-        } else if *p <= lower {
-            *p = 0;
-        } else {
-            let scaled = (255 * (*p as u16 - lower as u16)) / len;
-            *p = scaled as u8;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::definitions::{HasBlack, HasWhite};
-    use crate::utils::gray_bench_image;
     use image::{GrayImage, Luma};
-    use test::{black_box, Bencher};
 
     #[test]
     fn adaptive_threshold_constant() {
         let image = GrayImage::from_pixel(3, 3, Luma([100u8]));
-        let binary = adaptive_threshold(&image, 1);
+        let binary = adaptive_threshold(&image, 1, 0);
         let expected = GrayImage::from_pixel(3, 3, Luma::white());
-        assert_pixels_eq!(expected, binary);
+        assert_pixels_eq!(binary, expected);
     }
 
     #[test]
@@ -324,7 +482,7 @@ mod tests {
             for x in 0..3 {
                 let mut image = GrayImage::from_pixel(3, 3, Luma([200u8]));
                 image.put_pixel(x, y, Luma([100u8]));
-                let binary = adaptive_threshold(&image, 1);
+                let binary = adaptive_threshold(&image, 1, 0);
                 // All except the dark pixel have brightness >= their local mean
                 let mut expected = GrayImage::from_pixel(3, 3, Luma::white());
                 expected.put_pixel(x, y, Luma::black());
@@ -340,7 +498,7 @@ mod tests {
                 let mut image = GrayImage::from_pixel(5, 5, Luma([100u8]));
                 image.put_pixel(x, y, Luma([200u8]));
 
-                let binary = adaptive_threshold(&image, 1);
+                let binary = adaptive_threshold(&image, 1, 0);
 
                 for yb in 0..5 {
                     for xb in 0..5 {
@@ -364,33 +522,21 @@ mod tests {
         }
     }
 
-    #[bench]
-    fn bench_adaptive_threshold(b: &mut Bencher) {
-        let image = gray_bench_image(200, 200);
-        let block_radius = 10;
-        b.iter(|| {
-            let thresholded = adaptive_threshold(&image, block_radius);
-            black_box(thresholded);
-        });
-    }
+    #[test]
+    fn test_adaptive_thesholding_with_delta() {
+        let mut image = GrayImage::from_pixel(3, 3, Luma([100u8]));
+        image.put_pixel(2, 2, Luma::black());
 
-    #[bench]
-    fn bench_match_histogram(b: &mut Bencher) {
-        let target = GrayImage::from_pixel(200, 200, Luma([150]));
-        let image = gray_bench_image(200, 200);
-        b.iter(|| {
-            let matched = match_histogram(&image, &target);
-            black_box(matched);
-        });
-    }
+        //big delta should make the threshold for the black pixel small enough to be white
+        let binary = adaptive_threshold(&image, 1, 100);
+        let expected = GrayImage::from_pixel(3, 3, Luma::white());
+        assert_pixels_eq!(binary, expected);
 
-    #[bench]
-    fn bench_match_histogram_mut(b: &mut Bencher) {
-        let target = GrayImage::from_pixel(200, 200, Luma([150]));
-        let mut image = gray_bench_image(200, 200);
-        b.iter(|| {
-            match_histogram_mut(&mut image, &target);
-        });
+        //smaller delta should make the threshold the pixel to be black
+        let binary = adaptive_threshold(&image, 1, 50);
+        let mut expected = GrayImage::from_pixel(3, 3, Luma::white());
+        expected.put_pixel(2, 2, Luma::black());
+        assert_pixels_eq!(binary, expected);
     }
 
     #[test]
@@ -448,6 +594,13 @@ mod tests {
     }
 
     #[test]
+    fn test_kapur_constant() {
+        assert_eq!(kapur_level(&constant_image(10, 10, 0)), 0);
+        assert_eq!(kapur_level(&constant_image(10, 10, 128)), 0);
+        assert_eq!(kapur_level(&constant_image(10, 10, 255)), 0);
+    }
+
+    #[test]
     fn test_otsu_constant() {
         // Variance is 0 at any threshold, and we
         // only increase the current threshold if we
@@ -465,33 +618,24 @@ mod tests {
         assert_eq!(level, 120);
     }
 
-    #[bench]
-    fn bench_otsu_level(b: &mut Bencher) {
-        let image = gray_bench_image(200, 200);
-        b.iter(|| {
-            let level = otsu_level(&image);
-            black_box(level);
-        });
-    }
-
     #[test]
     fn test_threshold_0_image_0() {
         let expected = 0u8;
-        let actual = threshold(&constant_image(10, 10, 0), 0);
+        let actual = threshold(&constant_image(10, 10, 0), 0, ThresholdType::Binary);
         assert_pixels_eq!(actual, constant_image(10, 10, expected));
     }
 
     #[test]
     fn test_threshold_0_image_1() {
         let expected = 255u8;
-        let actual = threshold(&constant_image(10, 10, 1), 0);
+        let actual = threshold(&constant_image(10, 10, 1), 0, ThresholdType::Binary);
         assert_pixels_eq!(actual, constant_image(10, 10, expected));
     }
 
     #[test]
     fn test_threshold_threshold_255_image_255() {
         let expected = 0u8;
-        let actual = threshold(&constant_image(10, 10, 255), 255);
+        let actual = threshold(&constant_image(10, 10, 255), 255, ThresholdType::Binary);
         assert_pixels_eq!(actual, constant_image(10, 10, expected));
     }
 
@@ -504,8 +648,53 @@ mod tests {
 
         let expected = GrayImage::from_raw(26, 1, expected_contents).unwrap();
 
-        let actual = threshold(&original, 125u8);
-        assert_pixels_eq!(expected, actual);
+        let actual = threshold(&original, 125u8, ThresholdType::Binary);
+        assert_pixels_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_stretch_contrast() {
+        let input = gray_image!(1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 100, 255);
+        let expected = gray_image!(10u8, 10, 10, 11, 11, 12, 12, 13, 13, 13, 52, 120);
+        assert_pixels_eq!(stretch_contrast(&input, 1, 255, 10, 120), expected);
+    }
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod benches {
+    use super::*;
+    use crate::utils::gray_bench_image;
+    use image::{GrayImage, Luma};
+    use test::{black_box, Bencher};
+
+    #[bench]
+    fn bench_adaptive_threshold(b: &mut Bencher) {
+        let image = gray_bench_image(200, 200);
+        let block_radius = 10;
+        b.iter(|| {
+            let thresholded = adaptive_threshold(&image, block_radius, 0);
+            black_box(thresholded);
+        });
+    }
+
+    #[bench]
+    fn bench_match_histogram(b: &mut Bencher) {
+        let target = GrayImage::from_pixel(200, 200, Luma([150]));
+        let image = gray_bench_image(200, 200);
+        b.iter(|| {
+            let matched = match_histogram(&image, &target);
+            black_box(matched);
+        });
+    }
+
+    #[bench]
+    fn bench_match_histogram_mut(b: &mut Bencher) {
+        let target = GrayImage::from_pixel(200, 200, Luma([150]));
+        let mut image = gray_bench_image(200, 200);
+        b.iter(|| {
+            match_histogram_mut(&mut image, &target);
+        });
     }
 
     #[bench]
@@ -521,7 +710,8 @@ mod tests {
     fn bench_equalize_histogram_mut(b: &mut Bencher) {
         let mut image = gray_bench_image(500, 500);
         b.iter(|| {
-            black_box(equalize_histogram_mut(&mut image));
+            equalize_histogram_mut(&mut image);
+            black_box(());
         });
     }
 
@@ -529,7 +719,7 @@ mod tests {
     fn bench_threshold(b: &mut Bencher) {
         let image = gray_bench_image(500, 500);
         b.iter(|| {
-            let thresholded = threshold(&image, 125);
+            let thresholded = threshold(&image, 125, ThresholdType::Binary);
             black_box(thresholded);
         });
     }
@@ -538,24 +728,44 @@ mod tests {
     fn bench_threshold_mut(b: &mut Bencher) {
         let mut image = gray_bench_image(500, 500);
         b.iter(|| {
-            black_box(threshold_mut(&mut image, 125));
+            threshold_mut(&mut image, 125, ThresholdType::Binary);
+            black_box(());
+        });
+    }
+
+    #[bench]
+    fn bench_otsu_level(b: &mut Bencher) {
+        let image = gray_bench_image(200, 200);
+        b.iter(|| {
+            let level = otsu_level(&image);
+            black_box(level);
+        });
+    }
+
+    #[bench]
+    fn bench_kapur_level(b: &mut Bencher) {
+        let image = gray_bench_image(200, 200);
+        b.iter(|| {
+            let level = kapur_level(&image);
+            black_box(level);
         });
     }
 
     #[bench]
     fn bench_stretch_contrast(b: &mut Bencher) {
-        let image = gray_bench_image(500, 500);
+        let image = gray_bench_image(200, 200);
         b.iter(|| {
-            let stretched = stretch_contrast(&image, 20, 80);
-            black_box(stretched);
+            let scaled = stretch_contrast(&image, 0, 255, 0, 255);
+            black_box(scaled);
         });
     }
 
     #[bench]
     fn bench_stretch_contrast_mut(b: &mut Bencher) {
-        let mut image = gray_bench_image(500, 500);
+        let mut image = gray_bench_image(200, 200);
         b.iter(|| {
-            black_box(stretch_contrast_mut(&mut image, 20, 80));
+            stretch_contrast_mut(&mut image, 0, 255, 0, 255);
+            black_box(());
         });
     }
 }

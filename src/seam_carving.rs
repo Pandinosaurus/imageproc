@@ -4,8 +4,9 @@
 //! [seam carving]: https://en.wikipedia.org/wiki/Seam_carving
 
 use crate::definitions::{HasBlack, Image};
-use crate::gradients::sobel_gradient_map;
-use crate::map::{map_colors, WithChannel};
+use crate::gradients::gradients;
+use crate::kernel::{self};
+use crate::map::{map_pixels, WithChannel};
 use image::{GrayImage, Luma, Pixel, Rgb};
 use std::cmp::min;
 
@@ -15,10 +16,10 @@ pub struct VerticalSeam(Vec<u32>);
 /// Reduces the width of an image using seam carving.
 ///
 /// Warning: this is very slow! It implements the algorithm from
-/// https://inst.eecs.berkeley.edu/~cs194-26/fa16/hw/proj4-seamcarving/imret.pdf, with some
+/// <https://inst.eecs.berkeley.edu/~cs194-26/fa16/hw/proj4-seamcarving/imret.pdf>, with some
 /// extra unnecessary allocations thrown in. Rather than attempting to optimise the implementation
 /// of this inherently slow algorithm, the planned next step is to switch to the algorithm from
-/// https://users.cs.cf.ac.uk/Paul.Rosin/resources/papers/seam-carving-ChinaF.pdf.
+/// <https://users.cs.cf.ac.uk/Paul.Rosin/resources/papers/seam-carving-ChinaF.pdf>.
 pub fn shrink_width<P>(image: &Image<P>, target_width: u32) -> Image<P>
 // TODO: this is pretty silly! We should just be able to express that we want a pixel which is a slice of integral values
 where
@@ -54,11 +55,16 @@ where
         "Cannot find seams if image width is < 2"
     );
 
-    let mut gradients = sobel_gradient_map(image, |p| {
-        let gradient_sum: u16 = p.channels().iter().sum();
-        let gradient_mean: u16 = gradient_sum / P::CHANNEL_COUNT as u16;
-        Luma([gradient_mean as u32])
-    });
+    let mut gradients = gradients(
+        image,
+        kernel::SOBEL_HORIZONTAL_3X3,
+        kernel::SOBEL_VERTICAL_3X3,
+        |p| {
+            let gradient_sum: u16 = p.channels().iter().sum();
+            let gradient_mean: u16 = gradient_sum / P::CHANNEL_COUNT as u16;
+            Luma([gradient_mean as u32])
+        },
+    );
 
     // Find the least energy path through the gradient image.
     for y in 1..height {
@@ -163,7 +169,7 @@ pub fn draw_vertical_seams(image: &GrayImage, seams: &[VerticalSeam]) -> Image<R
     let height = image.height();
 
     let mut offsets = vec![vec![]; height as usize];
-    let mut out = map_colors(image, |p| p.to_rgb());
+    let mut out = map_pixels(image, |p| p.to_rgb());
 
     for seam in seams {
         for (y, x) in (0..height).rev().zip(&seam.0) {
@@ -181,8 +187,9 @@ pub fn draw_vertical_seams(image: &GrayImage, seams: &[VerticalSeam]) -> Image<R
     out
 }
 
+#[cfg(not(miri))]
 #[cfg(test)]
-mod tests {
+mod benches {
     use super::*;
     use crate::utils::gray_bench_image;
     use test::{black_box, Bencher};

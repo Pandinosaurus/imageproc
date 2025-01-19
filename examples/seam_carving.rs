@@ -1,7 +1,8 @@
 use image::{open, GrayImage, Luma, Pixel};
 use imageproc::definitions::Clamp;
-use imageproc::gradients::sobel_gradient_map;
-use imageproc::map::map_colors;
+use imageproc::gradients::gradients;
+use imageproc::kernel;
+use imageproc::map::map_pixels;
 use imageproc::seam_carving::*;
 use std::env;
 use std::fs;
@@ -31,7 +32,7 @@ fn main() {
 
     // Load image and convert to grayscale
     let input_image = open(input_path)
-        .expect(&format!("Could not load image at {:?}", input_path))
+        .unwrap_or_else(|_| panic!("Could not load image at {:?}", input_path))
         .to_rgb8();
 
     // Save original image in output directory
@@ -48,22 +49,27 @@ fn main() {
     for i in 0..seams_to_remove {
         println!("Removing seam {}", i);
         let vertical_seam = find_vertical_seam(&shrunk);
-        shrunk = remove_vertical_seam(&mut shrunk, &vertical_seam);
+        shrunk = remove_vertical_seam(&shrunk, &vertical_seam);
         seams.push(vertical_seam);
     }
 
     // Draw the seams on the original image.
-    let gray_image = map_colors(&input_image, |p| p.to_luma());
+    let gray_image = map_pixels(&input_image, |p| p.to_luma());
     let annotated = draw_vertical_seams(&gray_image, &seams);
     let annotated_path = output_dir.join("annotated.png");
     annotated.save(&annotated_path).unwrap();
 
     // Draw the seams on the gradient magnitude image.
-    let gradients = sobel_gradient_map(&input_image, |p| {
-        let mean = (p[0] + p[1] + p[2]) / 3;
-        Luma([mean as u32])
-    });
-    let clamped_gradients: GrayImage = map_colors(&gradients, |p| Luma([Clamp::clamp(p[0])]));
+    let gradients = gradients(
+        &input_image,
+        kernel::SOBEL_HORIZONTAL_3X3,
+        kernel::SOBEL_VERTICAL_3X3,
+        |p| {
+            let mean = (p[0] + p[1] + p[2]) / 3;
+            Luma([mean as u32])
+        },
+    );
+    let clamped_gradients: GrayImage = map_pixels(&gradients, |p| Luma([Clamp::clamp(p[0])]));
     let annotated_gradients = draw_vertical_seams(&clamped_gradients, &seams);
     let gradients_path = output_dir.join("gradients.png");
     clamped_gradients.save(&gradients_path).unwrap();

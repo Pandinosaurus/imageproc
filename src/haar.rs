@@ -3,7 +3,7 @@
 //! [Haar-like features]: https://en.wikipedia.org/wiki/Haar-like_features
 
 use crate::definitions::{HasBlack, HasWhite, Image};
-use image::{GenericImage, GenericImageView, ImageBuffer, Luma};
+use image::{GenericImage, GenericImageView, Luma};
 use itertools::Itertools;
 use std::marker::PhantomData;
 use std::ops::Range;
@@ -262,7 +262,7 @@ fn feature_size(feature_type: HaarFeatureType, block_size: Size<Pixels>) -> Size
 pub fn enumerate_haar_features(frame_width: u8, frame_height: u8) -> Vec<HaarFeature> {
     let frame_size = Size::new(frame_width, frame_height);
 
-    let feature_types = vec![
+    let feature_types = [
         HaarFeatureType::TwoRegionHorizontal,
         HaarFeatureType::ThreeRegionHorizontal,
         HaarFeatureType::TwoRegionVertical,
@@ -386,14 +386,12 @@ where
     I: GenericImage,
     I::Pixel: HasBlack + HasWhite,
 {
-    let mut out = ImageBuffer::new(image.width(), image.height());
+    let mut out = Image::new(image.width(), image.height());
     out.copy_from(image, 0, 0).unwrap();
     draw_haar_feature_mut(&mut out, feature);
     out
 }
-
-/// Draws the given Haar-like feature on an image in place, drawing pixels
-/// with a positive sign white and those with a negative sign black.
+#[doc=generate_mut_doc_comment!("draw_haar_feature")]
 pub fn draw_haar_feature_mut<I>(image: &mut I, feature: HaarFeature)
 where
     I: GenericImage,
@@ -425,7 +423,6 @@ mod tests {
     use super::*;
     use crate::integral_image::{integral_image, sum_image_pixels};
     use crate::utils::gray_bench_image;
-    use ::test;
 
     #[test]
     fn test_block_sizes() {
@@ -734,6 +731,13 @@ mod tests {
 
         assert_pixels_eq!(actual, expected);
     }
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod benches {
+    use super::*;
+    use crate::{integral_image::integral_image, utils::gray_bench_image};
 
     #[bench]
     fn bench_evaluate_all_features_10x10(b: &mut test::Bencher) {

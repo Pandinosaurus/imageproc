@@ -2,10 +2,10 @@ use crate::definitions::Image;
 use crate::drawing::line::draw_line_segment_mut;
 use crate::drawing::Canvas;
 use crate::rect::Rect;
-use image::{GenericImage, ImageBuffer};
+use image::GenericImage;
 use std::f32;
 
-/// Draws the outline of a rectangle on a new copy of an image.
+/// Draws the outline of a rectangle on an image.
 ///
 /// Draws as much of the boundary of the rectangle as lies inside the image bounds.
 #[must_use = "the function does not modify the original image"]
@@ -13,15 +13,12 @@ pub fn draw_hollow_rect<I>(image: &I, rect: Rect, color: I::Pixel) -> Image<I::P
 where
     I: GenericImage,
 {
-    let mut out = ImageBuffer::new(image.width(), image.height());
+    let mut out = Image::new(image.width(), image.height());
     out.copy_from(image, 0, 0).unwrap();
     draw_hollow_rect_mut(&mut out, rect, color);
     out
 }
-
-/// Draws the outline of a rectangle on an image in place.
-///
-/// Draws as much of the boundary of the rectangle as lies inside the image bounds.
+#[doc=generate_mut_doc_comment!("draw_hollow_rect")]
 pub fn draw_hollow_rect_mut<C>(canvas: &mut C, rect: Rect, color: C::Pixel)
 where
     C: Canvas,
@@ -37,7 +34,7 @@ where
     draw_line_segment_mut(canvas, (right, top), (right, bottom), color);
 }
 
-/// Draws a rectangle and its contents on a new copy of an image.
+/// Draws a rectangle and its contents on an image.
 ///
 /// Draws as much of the rectangle and its contents as lies inside the image bounds.
 #[must_use = "the function does not modify the original image"]
@@ -45,15 +42,12 @@ pub fn draw_filled_rect<I>(image: &I, rect: Rect, color: I::Pixel) -> Image<I::P
 where
     I: GenericImage,
 {
-    let mut out = ImageBuffer::new(image.width(), image.height());
+    let mut out = Image::new(image.width(), image.height());
     out.copy_from(image, 0, 0).unwrap();
     draw_filled_rect_mut(&mut out, rect, color);
     out
 }
-
-/// Draws a rectangle and its contents on an image in place.
-///
-/// Draws as much of the rectangle and its contents as lies inside the image bounds.
+#[doc=generate_mut_doc_comment!("draw_filled_rect")]
 pub fn draw_filled_rect_mut<C>(canvas: &mut C, rect: Rect, color: C::Pixel)
 where
     C: Canvas,
@@ -75,19 +69,7 @@ mod tests {
     use super::*;
     use crate::drawing::Blend;
     use crate::rect::Rect;
-    use image::{GrayImage, Luma, Pixel, Rgb, RgbImage, Rgba, RgbaImage};
-    use test::{black_box, Bencher};
-
-    #[bench]
-    fn bench_draw_filled_rect_mut_rgb(b: &mut Bencher) {
-        let mut image = RgbImage::new(200, 200);
-        let color = Rgb([120u8, 60u8, 47u8]);
-        let rect = Rect::at(50, 50).of_size(80, 90);
-        b.iter(|| {
-            draw_filled_rect_mut(&mut image, rect, color);
-            black_box(&image);
-        });
-    }
+    use image::{GrayImage, Luma, Pixel, Rgba, RgbaImage};
 
     #[test]
     fn test_draw_hollow_rect() {
@@ -141,13 +123,11 @@ mod tests {
         blended.blend(&semi_transparent_red);
 
         #[rustfmt::skip]
-        let expected = vec![
-            white, white,   white, white, white,
+        let expected = [white, white,   white, white, white,
             white,  blue,    blue,  blue, white,
             white,  blue, blended,  blue, white,
             white,  blue,    blue,  blue, white,
-            white, white,   white, white, white
-        ];
+            white, white,   white, white, white];
         let expected = RgbaImage::from_fn(5, 5, |x, y| expected[(y * 5 + x) as usize]);
 
         assert_pixels_eq!(image.0, expected);
@@ -156,5 +136,25 @@ mod tests {
         // we're blending in the correct direction only.
         draw_filled_rect_mut(&mut image, Rect::at(2, 2).of_size(1, 1), blue);
         assert_eq!(*image.0.get_pixel(2, 2), blue);
+    }
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod benches {
+    use super::*;
+    use crate::rect::Rect;
+    use image::{Rgb, RgbImage};
+    use test::{black_box, Bencher};
+
+    #[bench]
+    fn bench_draw_filled_rect_mut_rgb(b: &mut Bencher) {
+        let mut image = RgbImage::new(200, 200);
+        let color = Rgb([120u8, 60u8, 47u8]);
+        let rect = Rect::at(50, 50).of_size(80, 90);
+        b.iter(|| {
+            draw_filled_rect_mut(&mut image, rect, color);
+            black_box(&image);
+        });
     }
 }

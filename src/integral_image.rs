@@ -58,7 +58,7 @@ where
 /// Computes the 2d running sum of the squares of the intensities in an image. Channels are summed
 /// independently.
 ///
-/// See the [`integral_image`](fn.integral_image.html) documentation for more information on integral images.
+/// See the [`integral_image()`] documentation for more information on integral images.
 ///
 /// # Examples
 /// ```
@@ -106,14 +106,18 @@ where
     let out_width = in_width + 1;
     let out_height = in_height + 1;
 
-    let mut out = Image::<ChannelMap<P, T>>::new(out_width, out_height);
+    let mut out = Image::new(out_width, out_height);
 
     if in_width == 0 || in_height == 0 {
         return out;
     }
 
+    let zero = T::zero();
+    let mut sum = vec![zero; P::CHANNEL_COUNT as usize];
     for y in 0..in_height {
-        let mut sum = vec![T::zero(); P::CHANNEL_COUNT as usize];
+        sum.iter_mut().for_each(|x| {
+            *x = zero;
+        });
         for x in 0..in_width {
             // JUSTIFICATION
             //  Benefit
@@ -122,8 +126,8 @@ where
             //  Correctness
             //      x and y are within bounds by definition of in_width and in_height
             let input = unsafe { image.unsafe_get_pixel(x, y) };
-            for (s, c) in sum.iter_mut().zip(input.channels()) {
-                let pix: T = (*c).into();
+            for (s, &c) in sum.iter_mut().zip(input.channels()) {
+                let pix: T = c.into();
                 *s += if square { pix * pix } else { pix };
             }
 
@@ -138,8 +142,8 @@ where
             // pixel here we need to use the method with bounds checking
             let current = out.get_pixel_mut(x + 1, y + 1);
             // Using zip here makes this slower.
-            for c in 0..P::CHANNEL_COUNT {
-                current.channels_mut()[c as usize] = above.channels()[c as usize] + sum[c as usize];
+            for c in 0..P::CHANNEL_COUNT as usize {
+                current.channels_mut()[c] = above.channels()[c] + sum[c];
             }
         }
     }
@@ -242,7 +246,7 @@ where
 /// implements `Primitive`. In that case, this function returns `[T; 1]` for an image
 /// whose pixels are of type `Luma`, `[T; 3]` for `Rgb` pixels and `[T; 4]` for `Rgba` pixels.
 ///
-/// See the [`integral_image`](fn.integral_image.html) documentation for examples.
+/// See the [`integral_image()`] documentation for examples.
 pub fn sum_image_pixels<P>(
     integral_image: &Image<P>,
     left: u32,
@@ -268,7 +272,7 @@ where
 /// integral image of F and `integral_squared_image` is the integral image of the squares of the
 /// pixels in F.
 ///
-/// See the [`integral_image`](fn.integral_image.html) documentation for more information on integral images.
+/// See the [`integral_image()`] documentation for more information on integral images.
 ///
 ///# Examples
 /// ```
@@ -461,11 +465,7 @@ pub fn column_running_sum(image: &GrayImage, column: u32, buffer: &mut [u32], pa
 mod tests {
     use super::*;
     use crate::definitions::Image;
-    use crate::property_testing::GrayTestImage;
-    use crate::utils::{gray_bench_image, pixel_diff_summary, rgb_bench_image};
-    use ::test;
-    use image::{GenericImage, ImageBuffer, Luma};
-    use quickcheck::{quickcheck, TestResult};
+    use image::{GenericImage, Luma};
 
     #[test]
     fn test_integral_image_gray() {
@@ -551,32 +551,14 @@ mod tests {
         assert_eq!(sum_image_pixels(&integral, 1, 1, 1, 1), [10, 11, 12]);
     }
 
-    #[bench]
-    fn bench_integral_image_gray(b: &mut test::Bencher) {
-        let image = gray_bench_image(500, 500);
-        b.iter(|| {
-            let integral = integral_image::<_, u32>(&image);
-            test::black_box(integral);
-        });
-    }
-
-    #[bench]
-    fn bench_integral_image_rgb(b: &mut test::Bencher) {
-        let image = rgb_bench_image(500, 500);
-        b.iter(|| {
-            let integral = integral_image::<_, u32>(&image);
-            test::black_box(integral);
-        });
-    }
-
     /// Simple implementation of integral_image to validate faster versions against.
-    fn integral_image_ref<I>(image: &I) -> Image<Luma<u32>>
+    pub fn integral_image_ref<I>(image: &I) -> Image<Luma<u32>>
     where
         I: GenericImage<Pixel = Luma<u8>>,
     {
         let (in_width, in_height) = image.dimensions();
         let (out_width, out_height) = (in_width + 1, in_height + 1);
-        let mut out = ImageBuffer::from_pixel(out_width, out_height, Luma([0u32]));
+        let mut out = Image::from_pixel(out_width, out_height, Luma([0u32]));
 
         for y in 1..out_height {
             for x in 0..out_width {
@@ -594,20 +576,52 @@ mod tests {
 
         out
     }
+}
 
-    #[test]
-    fn test_integral_image_matches_reference_implementation() {
-        fn prop(image: GrayTestImage) -> TestResult {
-            let expected = integral_image_ref(&image.0);
-            let actual = integral_image(&image.0);
-            match pixel_diff_summary(&actual, &expected) {
-                None => TestResult::passed(),
-                Some(err) => TestResult::error(err),
-            }
+#[cfg(not(miri))]
+#[cfg(test)]
+mod proptests {
+    use super::tests::integral_image_ref;
+    use super::*;
+    use crate::proptest_utils::arbitrary_image;
+    use image::Luma;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn test_integral_image_matches_reference_implementation(image in arbitrary_image::<Luma<u8>>(0..10, 0..10)) {
+            let expected = integral_image_ref(&image);
+            let actual = integral_image(&image);
+
+            assert_eq!(expected, actual);
         }
-        quickcheck(prop as fn(GrayTestImage) -> TestResult);
+    }
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod benches {
+    use super::*;
+    use crate::utils::{gray_bench_image, rgb_bench_image};
+    use ::test;
+
+    #[bench]
+    fn bench_integral_image_gray(b: &mut test::Bencher) {
+        let image = gray_bench_image(500, 500);
+        b.iter(|| {
+            let integral = integral_image::<_, u32>(&image);
+            test::black_box(integral);
+        });
     }
 
+    #[bench]
+    fn bench_integral_image_rgb(b: &mut test::Bencher) {
+        let image = rgb_bench_image(500, 500);
+        b.iter(|| {
+            let integral = integral_image::<_, u32>(&image);
+            test::black_box(integral);
+        });
+    }
     #[bench]
     fn bench_row_running_sum(b: &mut test::Bencher) {
         let image = gray_bench_image(1000, 1);

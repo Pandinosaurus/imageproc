@@ -3,11 +3,11 @@
 use image::{open, GenericImage, GrayImage, Luma, Rgb, RgbImage};
 use imageproc::definitions::Image;
 use imageproc::drawing::draw_hollow_rect_mut;
-use imageproc::map::map_colors;
+use imageproc::map::map_pixels;
 use imageproc::rect::Rect;
-use imageproc::template_matching::{match_template, MatchTemplateMethod};
 #[cfg(feature = "rayon")]
 use imageproc::template_matching::match_template_parallel;
+use imageproc::template_matching::{match_template, MatchTemplateMethod};
 use std::env;
 use std::f32;
 use std::fs;
@@ -45,7 +45,7 @@ If the optional boolean argument parallel is given, match_template will be calle
         let template_y = args[4].parse().unwrap();
         let template_w = args[5].parse().unwrap();
         let template_h = args[6].parse().unwrap();
-        let parallel = args.get(7).map_or(false, |s| s.parse().unwrap());
+        let parallel = args.get(7).is_some_and(|s| s.parse().unwrap());
 
         TemplateMatchingArgs {
             input_path,
@@ -72,7 +72,7 @@ fn convert_to_gray_image(image: &Image<Luma<f32>>) -> GrayImage {
 
     let range = hi - lo;
     let scale = |x| (255.0 * (x - lo) / range) as u8;
-    map_colors(image, |p| Luma([scale(p[0])]))
+    map_pixels(image, |p| Luma([scale(p[0])]))
 }
 
 fn copy_sub_image(image: &GrayImage, x: u32, y: u32, w: u32, h: u32) -> GrayImage {
@@ -92,7 +92,7 @@ fn copy_sub_image(image: &GrayImage, x: u32, y: u32, w: u32, h: u32) -> GrayImag
 }
 
 fn draw_green_rect(image: &GrayImage, rect: Rect) -> RgbImage {
-    let mut color_image = map_colors(image, |p| Rgb([p[0], p[0], p[0]]));
+    let mut color_image = map_pixels(image, |p| Rgb([p[0], p[0], p[0]]));
     draw_hollow_rect_mut(&mut color_image, rect, Rgb([0, 255, 0]));
     color_image
 }
@@ -105,14 +105,16 @@ fn run_match_template(
 ) -> RgbImage {
     // Match the template and convert to u8 depth to display
     let result = if args.parallel {
-        #[cfg(feature = "rayon")] {
-            match_template_parallel(&image, &template, method)
+        #[cfg(feature = "rayon")]
+        {
+            match_template_parallel(image, template, method)
         }
-        #[cfg(not(feature = "rayon"))]{
+        #[cfg(not(feature = "rayon"))]
+        {
             unimplemented!("parallel template matching requires rayon")
         }
     } else {
-        match_template(&image, &template, method)
+        match_template(image, template, method)
     };
     let result_scaled = convert_to_gray_image(&result);
 
@@ -145,7 +147,7 @@ fn main() {
 
     // Load image and convert to grayscale
     let image = open(input_path)
-        .expect(&format!("Could not load image at {:?}", input_path))
+        .unwrap_or_else(|_| panic!("Could not load image at {:?}", input_path))
         .to_luma8();
 
     // Extract the requested image sub-region to use as the template

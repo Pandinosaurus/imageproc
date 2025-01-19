@@ -1,9 +1,9 @@
 //! Functions for detecting edges in images.
 
-use crate::definitions::{HasBlack, HasWhite};
-use crate::filter::gaussian_blur_f32;
-use crate::gradients::{horizontal_sobel, vertical_sobel};
-use image::{GenericImageView, GrayImage, ImageBuffer, Luma};
+use crate::definitions::{HasBlack, HasWhite, Image};
+use crate::filter::{filter_clamped, gaussian_blur_f32};
+use crate::kernel::{self};
+use image::{GenericImageView, GrayImage, Luma};
 use std::f32;
 
 /// Runs the canny edge detection algorithm.
@@ -14,11 +14,11 @@ use std::f32;
 /// # Params
 ///
 /// - `low_threshold`: Low threshold for the hysteresis procedure.
-/// Edges with a strength higher than the low threshold will appear
-/// in the output image, if there are strong edges nearby.
+///   Edges with a strength higher than the low threshold will appear
+///   in the output image, if there are strong edges nearby.
 /// - `high_threshold`: High threshold for the hysteresis procedure.
-/// Edges with a strength higher than the high threshold will always
-/// appear as edges in the output image.
+///   Edges with a strength higher than the high threshold will always
+///   appear as edges in the output image.
 ///
 /// The greatest possible edge strength (and so largest sensible threshold)
 /// is`sqrt(5) * 2 * 255`, or approximately 1140.39.
@@ -35,15 +35,15 @@ pub fn canny(image: &GrayImage, low_threshold: f32, high_threshold: f32) -> Gray
     let blurred = gaussian_blur_f32(image, SIGMA);
 
     // 2. Intensity of gradients.
-    let gx = horizontal_sobel(&blurred);
-    let gy = vertical_sobel(&blurred);
+    let gx = filter_clamped(&blurred, kernel::SOBEL_HORIZONTAL_3X3);
+    let gy = filter_clamped(&blurred, kernel::SOBEL_VERTICAL_3X3);
     let g: Vec<f32> = gx
         .iter()
         .zip(gy.iter())
         .map(|(h, v)| (*h as f32).hypot(*v as f32))
         .collect::<Vec<f32>>();
 
-    let g = ImageBuffer::from_raw(image.width(), image.height(), g).unwrap();
+    let g = Image::from_raw(image.width(), image.height(), g).unwrap();
 
     // 3. Non-maximum-suppression (Make edges thinner)
     let thinned = non_maximum_suppression(&g, &gx, &gy);
@@ -54,12 +54,12 @@ pub fn canny(image: &GrayImage, low_threshold: f32, high_threshold: f32) -> Gray
 
 /// Finds local maxima to make the edges thinner.
 fn non_maximum_suppression(
-    g: &ImageBuffer<Luma<f32>, Vec<f32>>,
-    gx: &ImageBuffer<Luma<i16>, Vec<i16>>,
-    gy: &ImageBuffer<Luma<i16>, Vec<i16>>,
-) -> ImageBuffer<Luma<f32>, Vec<f32>> {
+    g: &Image<Luma<f32>>,
+    gx: &Image<Luma<i16>>,
+    gy: &Image<Luma<i16>>,
+) -> Image<Luma<f32>> {
     const RADIANS_TO_DEGREES: f32 = 180f32 / f32::consts::PI;
-    let mut out = ImageBuffer::from_pixel(g.width(), g.height(), Luma([0.0]));
+    let mut out = Image::from_pixel(g.width(), g.height(), Luma([0.0]));
     for y in 1..g.height() - 1 {
         for x in 1..g.width() - 1 {
             let x_gradient = gx[(x, y)][0] as f32;
@@ -111,15 +111,11 @@ fn non_maximum_suppression(
 
 /// Filter out edges with the thresholds.
 /// Non-recursive breadth-first search.
-fn hysteresis(
-    input: &ImageBuffer<Luma<f32>, Vec<f32>>,
-    low_thresh: f32,
-    high_thresh: f32,
-) -> ImageBuffer<Luma<u8>, Vec<u8>> {
+fn hysteresis(input: &Image<Luma<f32>>, low_thresh: f32, high_thresh: f32) -> Image<Luma<u8>> {
     let max_brightness = Luma::white();
     let min_brightness = Luma::black();
     // Init output image as all black.
-    let mut out = ImageBuffer::from_pixel(input.width(), input.height(), min_brightness);
+    let mut out = Image::from_pixel(input.width(), input.height(), min_brightness);
     // Stack. Possible optimization: Use previously allocated memory, i.e. gx.
     let mut edges = Vec::with_capacity(((input.width() * input.height()) / 2) as usize);
     for y in 1..input.height() - 1 {
@@ -131,8 +127,7 @@ fn hysteresis(
                 out.put_pixel(x, y, max_brightness);
                 edges.push((x, y));
                 // Track neighbors until no neighbor is >= low_thresh.
-                while !edges.is_empty() {
-                    let (nx, ny) = edges.pop().unwrap();
+                while let Some((nx, ny)) = edges.pop() {
                     let neighbor_indices = [
                         (nx + 1, ny),
                         (nx + 1, ny + 1),
@@ -157,8 +152,9 @@ fn hysteresis(
     out
 }
 
+#[cfg(not(miri))]
 #[cfg(test)]
-mod tests {
+mod benches {
     use super::canny;
     use crate::drawing::draw_filled_rect_mut;
     use crate::rect::Rect;

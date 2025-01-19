@@ -1,6 +1,7 @@
 //! Demonstrates computing and visualising HoG gradients.
 
-use image::{open, ImageBuffer};
+use image::open;
+use imageproc::definitions::Image;
 use imageproc::hog::*;
 use std::env;
 use std::path::Path;
@@ -8,7 +9,7 @@ use std::path::Path;
 fn create_hog_image(input: &Path, signed: bool) {
     // Load a image::DynamicImage and convert it to a image::GrayImage
     let image = open(input)
-        .expect(&format!("Could not load image at {:?}", input))
+        .unwrap_or_else(|_| panic!("Could not load image at {:?}", input))
         .to_luma8();
 
     // We're not going to do anything interesting with the block sizes here - they're
@@ -18,7 +19,7 @@ fn create_hog_image(input: &Path, signed: bool) {
     // divisible into blocks.
     let opts = HogOptions {
         orientations: 8,
-        signed: signed,
+        signed,
         cell_side: 5,
         block_side: 2,
         block_stride: 1,
@@ -32,7 +33,7 @@ fn create_hog_image(input: &Path, signed: bool) {
 
     // Crop image to a suitable size
     let (cropped_width, cropped_height) = (10 * (width / 10), 10 * (height / 10));
-    let mut cropped = ImageBuffer::new(cropped_width, cropped_height);
+    let mut cropped = Image::new(cropped_width, cropped_height);
     for y in 0..cropped_height {
         for x in 0..cropped_width {
             cropped.put_pixel(x, y, *image.get_pixel(x, y));

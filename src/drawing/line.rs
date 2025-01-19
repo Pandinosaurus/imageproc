@@ -1,8 +1,6 @@
 use crate::definitions::Image;
 use crate::drawing::Canvas;
-use image::{GenericImage, ImageBuffer, Pixel};
-use std::f32;
-use std::i32;
+use image::{GenericImage, Pixel};
 use std::mem::{swap, transmute};
 
 /// Iterates over the coordinates in a line segment using
@@ -19,7 +17,7 @@ pub struct BresenhamLineIter {
 }
 
 impl BresenhamLineIter {
-    /// Creates a [`BresenhamLineIter`](struct.BresenhamLineIter.html) which will iterate over the integer coordinates
+    /// Creates a [`BresenhamLineIter`] which will iterate over the integer coordinates
     /// between `start` and `end`.
     pub fn new(start: (f32, f32), end: (f32, f32)) -> BresenhamLineIter {
         let (mut x0, mut y0) = (start.0, start.1);
@@ -76,18 +74,14 @@ impl Iterator for BresenhamLineIter {
     }
 }
 
-fn clamp(x: f32, upper_bound: u32) -> f32 {
-    if x < 0f32 {
-        return 0f32;
-    }
-    if x >= upper_bound as f32 {
-        return (upper_bound - 1) as f32;
-    }
-    x
+fn in_bounds<I: GenericImage>((x, y): (i32, i32), image: &I) -> bool {
+    x >= 0 && x < image.width() as i32 && y >= 0 && y < image.height() as i32
 }
 
 fn clamp_point<I: GenericImage>(p: (f32, f32), image: &I) -> (f32, f32) {
-    (clamp(p.0, image.width()), clamp(p.1, image.height()))
+    let x = p.0.clamp(0.0, (image.width() - 1) as f32);
+    let y = p.1.clamp(0.0, (image.height() - 1) as f32);
+    (x, y)
 }
 
 /// Iterates over the image pixels in a line segment using
@@ -97,8 +91,8 @@ pub struct BresenhamLinePixelIter<'a, P: Pixel> {
     image: &'a Image<P>,
 }
 
-impl<'a, P: Pixel> BresenhamLinePixelIter<'a, P> {
-    /// Creates a [`BresenhamLinePixelIter`](struct.BresenhamLinePixelIter.html) which will iterate over
+impl<P: Pixel> BresenhamLinePixelIter<'_, P> {
+    /// Creates a [`BresenhamLinePixelIter`] which will iterate over
     /// the image pixels with coordinates between `start` and `end`.
     pub fn new(
         image: &Image<P>,
@@ -119,8 +113,8 @@ impl<'a, P: Pixel> Iterator for BresenhamLinePixelIter<'a, P> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.iter
-            .next()
-            .map(|p| self.image.get_pixel(p.0 as u32, p.1 as u32))
+            .find(|&p| in_bounds(p, self.image))
+            .map(|(x, y)| self.image.get_pixel(x as u32, y as u32))
     }
 }
 
@@ -131,8 +125,8 @@ pub struct BresenhamLinePixelIterMut<'a, P: Pixel> {
     image: &'a mut Image<P>,
 }
 
-impl<'a, P: Pixel> BresenhamLinePixelIterMut<'a, P> {
-    /// Creates a [`BresenhamLinePixelIterMut`](struct.BresenhamLinePixelIterMut.html) which will iterate over
+impl<P: Pixel> BresenhamLinePixelIterMut<'_, P> {
+    /// Creates a [`BresenhamLinePixelIterMut`] which will iterate over
     /// the image pixels with coordinates between `start` and `end`.
     pub fn new(
         image: &mut Image<P>,
@@ -146,7 +140,7 @@ impl<'a, P: Pixel> BresenhamLinePixelIterMut<'a, P> {
         // The next two assertions are for https://github.com/image-rs/imageproc/issues/281
         assert!(P::CHANNEL_COUNT > 0);
         assert!(
-            image.width() < i32::max_value() as u32 && image.height() < i32::max_value() as u32,
+            image.width() < i32::MAX as u32 && image.height() < i32::MAX as u32,
             "Image dimensions are too large"
         );
         let iter = BresenhamLineIter::new(clamp_point(start, image), clamp_point(end, image));
@@ -159,13 +153,13 @@ impl<'a, P: Pixel> Iterator for BresenhamLinePixelIterMut<'a, P> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.iter
-            .next()
-            .map(|p| self.image.get_pixel_mut(p.0 as u32, p.1 as u32))
+            .find(|&p| in_bounds(p, self.image))
+            .map(|(x, y)| self.image.get_pixel_mut(x as u32, y as u32))
             .map(|p| unsafe { transmute(p) })
     }
 }
 
-/// Draws a line segment on a new copy of an image.
+/// Draws a line segment on an image.
 ///
 /// Draws as much of the line segment between start and end as lies inside the image bounds.
 ///
@@ -180,17 +174,12 @@ pub fn draw_line_segment<I>(
 where
     I: GenericImage,
 {
-    let mut out = ImageBuffer::new(image.width(), image.height());
+    let mut out = Image::new(image.width(), image.height());
     out.copy_from(image, 0, 0).unwrap();
     draw_line_segment_mut(&mut out, start, end, color);
     out
 }
-
-/// Draws a line segment on an image in place.
-///
-/// Draws as much of the line segment between start and end as lies inside the image bounds.
-///
-/// Uses [Bresenham's line drawing algorithm](https://en.wikipedia.org/wiki/Bresenham%27s_line_algorithm).
+#[doc=generate_mut_doc_comment!("draw_line_segment")]
 pub fn draw_line_segment_mut<C>(canvas: &mut C, start: (f32, f32), end: (f32, f32), color: C::Pixel)
 where
     C: Canvas,
@@ -210,12 +199,12 @@ where
     }
 }
 
-/// Draws an antialised line segment on a new copy of an image.
+/// Draws an antialised line segment on an image.
 ///
 /// Draws as much of the line segment between `start` and `end` as lies inside the image bounds.
 ///
 /// The parameters of blend are (line color, original color, line weight).
-/// Consider using [`interpolate`](fn.interpolate.html) for blend.
+/// Consider using [`interpolate()`](crate::pixelops::interpolate) for blend.
 ///
 /// Uses [Xu's line drawing algorithm](https://en.wikipedia.org/wiki/Xiaolin_Wu%27s_line_algorithm).
 #[must_use = "the function does not modify the original image"]
@@ -231,20 +220,12 @@ where
 
     B: Fn(I::Pixel, I::Pixel, f32) -> I::Pixel,
 {
-    let mut out = ImageBuffer::new(image.width(), image.height());
+    let mut out = Image::new(image.width(), image.height());
     out.copy_from(image, 0, 0).unwrap();
     draw_antialiased_line_segment_mut(&mut out, start, end, color, blend);
     out
 }
-
-/// Draws an antialised line segment on an image in place.
-///
-/// Draws as much of the line segment between `start` and `end` as lies inside the image bounds.
-///
-/// The parameters of blend are (line color, original color, line weight).
-/// Consider using [`interpolate`](fn.interpolate.html) for blend.
-///
-/// Uses [Xu's line drawing algorithm](https://en.wikipedia.org/wiki/Xiaolin_Wu%27s_line_algorithm).
+#[doc=generate_mut_doc_comment!("draw_antialiased_line_segment")]
 pub fn draw_antialiased_line_segment_mut<I, B>(
     image: &mut I,
     start: (i32, i32),
@@ -321,7 +302,7 @@ where
     blend: B,
 }
 
-impl<'a, I, T, B> Plotter<'a, I, T, B>
+impl<I, T, B> Plotter<'_, I, T, B>
 where
     I: GenericImage,
 
@@ -358,6 +339,21 @@ mod tests {
     //   ---   ---
     //   3 / | \ 0
     //   / 2 | 1 \
+
+    #[test]
+    fn test_draw_line_segment_zero_length() {
+        let image = GrayImage::from_pixel(5, 5, Luma([1u8]));
+
+        let expected = gray_image!(
+            1, 1, 1, 1, 1;
+            4, 1, 1, 1, 1;
+            1, 1, 1, 1, 1;
+            1, 1, 1, 1, 1;
+            1, 1, 1, 1, 1);
+
+        let actual = draw_line_segment(&image, (0f32, 1f32), (0f32, 1f32), Luma([4u8]));
+        assert_pixels_eq!(actual, expected);
+    }
 
     #[test]
     fn test_draw_line_segment_horizontal() {
@@ -567,6 +563,43 @@ mod tests {
         assert_pixels_eq!(oct3, expected);
     }
 
+    #[test]
+    fn test_draw_line_segment_horizontal_using_bresenham_line_pixel_iter_mut() {
+        let image = GrayImage::from_pixel(5, 5, Luma([1u8]));
+
+        let expected = gray_image!(
+            1, 1, 1, 1, 1;
+            4, 4, 4, 4, 4;
+            1, 1, 1, 1, 1;
+            1, 1, 1, 1, 1;
+            1, 1, 1, 1, 1);
+
+        let mut right = image.clone();
+        {
+            let right_iter =
+                BresenhamLinePixelIterMut::new(&mut right, (-3f32, 1f32), (6f32, 1f32));
+            for p in right_iter {
+                *p = Luma([4u8]);
+            }
+        }
+        assert_pixels_eq!(right, expected);
+
+        let mut left = image.clone();
+        {
+            let left_iter = BresenhamLinePixelIterMut::new(&mut left, (6f32, 1f32), (-3f32, 1f32));
+            for p in left_iter {
+                *p = Luma([4u8]);
+            }
+        }
+        assert_pixels_eq!(left, expected);
+    }
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod benches {
+    use image::{GrayImage, Luma};
+
     macro_rules! bench_antialiased_lines {
         ($name:ident, $start:expr, $end:expr) => {
             #[bench]
@@ -607,35 +640,4 @@ mod tests {
         (10, 10),
         (450, 80)
     );
-
-    #[test]
-    fn test_draw_line_segment_horizontal_using_bresenham_line_pixel_iter_mut() {
-        let image = GrayImage::from_pixel(5, 5, Luma([1u8]));
-
-        let expected = gray_image!(
-            1, 1, 1, 1, 1;
-            4, 4, 4, 4, 4;
-            1, 1, 1, 1, 1;
-            1, 1, 1, 1, 1;
-            1, 1, 1, 1, 1);
-
-        let mut right = image.clone();
-        {
-            let right_iter =
-                BresenhamLinePixelIterMut::new(&mut right, (-3f32, 1f32), (6f32, 1f32));
-            for p in right_iter {
-                *p = Luma([4u8]);
-            }
-        }
-        assert_pixels_eq!(right, expected);
-
-        let mut left = image.clone();
-        {
-            let left_iter = BresenhamLinePixelIterMut::new(&mut left, (6f32, 1f32), (-3f32, 1f32));
-            for p in left_iter {
-                *p = Luma([4u8]);
-            }
-        }
-        assert_pixels_eq!(left, expected);
-    }
 }

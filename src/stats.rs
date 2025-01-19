@@ -1,10 +1,77 @@
 //! Statistical properties of images.
 
 use crate::definitions::Image;
-use crate::math::cast;
-use conv::ValueInto;
 use image::{GenericImageView, GrayImage, Pixel, Primitive};
 use num::Bounded;
+
+/// A minimum and maximum value returned by [`min_max()`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MinMax<T> {
+    /// The minimum value
+    pub min: T,
+    /// The maximum value
+    pub max: T,
+}
+
+/// Returns the minimum and maximum values per channel in an image.
+///
+/// # Panics
+///
+/// 1. If `image.is_empty()`
+///
+/// # Examples
+///
+/// ```
+/// # extern crate image;
+/// # #[macro_use]
+/// # extern crate imageproc;
+/// # fn main() {
+/// use imageproc::stats::min_max;
+///
+/// let image = gray_image!(
+///     1, 2, 3;
+///     4, 5, 6);
+///
+/// // A greyscale image has only one channel.
+/// let min_max = min_max(&image)[0];
+///
+/// assert_eq!(min_max.min, 1);
+/// assert_eq!(min_max.max, 6);
+/// # }
+/// ````
+pub fn min_max<P, T>(image: &Image<P>) -> Vec<MinMax<T>>
+where
+    P: Pixel<Subpixel = T>,
+    T: Ord + Copy,
+{
+    assert!(
+        !image.is_empty(),
+        "cannot find the min_max() of an empty image"
+    );
+
+    let mut ranges = vec![(None, None); P::CHANNEL_COUNT as usize];
+
+    for pix in image.pixels() {
+        for (i, c) in pix.channels().iter().enumerate() {
+            let (current_min, current_max) = &mut ranges[i];
+
+            if current_min.map_or(true, |x| c < x) {
+                *current_min = Some(c);
+            }
+            if current_max.map_or(true, |x| c > x) {
+                *current_max = Some(c);
+            }
+        }
+    }
+
+    ranges
+        .into_iter()
+        .map(|(min, max)| MinMax {
+            min: *min.unwrap(),
+            max: *max.unwrap(),
+        })
+        .collect()
+}
 
 /// A set of per-channel histograms from an image with 8 bits per channel.
 pub struct ChannelHistogram {
@@ -110,13 +177,13 @@ where
     I: GenericImageView<Pixel = P>,
     J: GenericImageView<Pixel = P>,
     P: Pixel,
-    P::Subpixel: ValueInto<f64>,
+    P::Subpixel: Into<f64>,
 {
     mean_squared_error(left, right).sqrt()
 }
 
 /// Returns the peak signal to noise ratio for a clean image and its noisy
-/// aproximation. All channels are considered equally. If you do not want this
+/// approximation. All channels are considered equally. If you do not want this
 /// (e.g. if using RGBA) then change image formats first.
 /// See also [peak signal-to-noise ratio (wikipedia)](https://en.wikipedia.org/wiki/Peak_signal-to-noise_ratio).
 pub fn peak_signal_to_noise_ratio<I, J, P>(original: &I, noisy: &J) -> f64
@@ -124,9 +191,9 @@ where
     I: GenericImageView<Pixel = P>,
     J: GenericImageView<Pixel = P>,
     P: Pixel,
-    P::Subpixel: ValueInto<f64> + Primitive,
+    P::Subpixel: Into<f64> + Primitive,
 {
-    let max: f64 = cast(<P::Subpixel as Bounded>::max_value());
+    let max: f64 = <P::Subpixel as Bounded>::max_value().into();
     let mse = mean_squared_error(original, noisy);
     20f64 * max.log(10f64) - 10f64 * mse.log(10f64)
 }
@@ -136,14 +203,14 @@ where
     I: GenericImageView<Pixel = P>,
     J: GenericImageView<Pixel = P>,
     P: Pixel,
-    P::Subpixel: ValueInto<f64>,
+    P::Subpixel: Into<f64>,
 {
     assert_dimensions_match!(left, right);
     let mut sum_squared_diffs = 0f64;
     for (p, q) in left.pixels().zip(right.pixels()) {
         for (c, d) in p.2.channels().iter().zip(q.2.channels().iter()) {
-            let fc: f64 = cast(*c);
-            let fd: f64 = cast(*d);
+            let fc: f64 = (*c).into();
+            let fd: f64 = (*d).into();
             let diff = fc - fd;
             sum_squared_diffs += diff * diff;
         }
@@ -155,8 +222,26 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{GrayImage, Luma, Rgb, RgbImage};
-    use test::Bencher;
+
+    #[test]
+    fn test_range() {
+        let image = rgb_image!(
+            [1u8, 10u8, 0u8],
+            [2u8, 20u8, 3u8],
+            [3u8, 30u8, 255u8],
+            [2u8, 20u8, 7u8],
+            [1u8, 10u8, 8u8]
+        );
+
+        assert_eq!(
+            min_max(&image),
+            vec![
+                MinMax { min: 1, max: 3 },
+                MinMax { min: 10, max: 30 },
+                MinMax { min: 0, max: 255 }
+            ]
+        )
+    }
 
     #[test]
     fn test_cumulative_histogram() {
@@ -264,6 +349,14 @@ mod tests {
         let right = gray_image!(8; 4);
         let _ = root_mean_squared_error(&left, &right);
     }
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod benches {
+    use super::*;
+    use image::{GrayImage, Luma, Rgb, RgbImage};
+    use test::Bencher;
 
     fn left_image_rgb(width: u32, height: u32) -> RgbImage {
         RgbImage::from_fn(width, height, |x, y| Rgb([x as u8, y as u8, (x + y) as u8]))

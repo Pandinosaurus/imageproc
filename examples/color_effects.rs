@@ -1,7 +1,7 @@
 //! Demonstrates adding a color tint and applying a color gradient to a grayscale image.
 
 use image::{open, Luma, Rgb};
-use imageproc::map::map_colors;
+use imageproc::map::map_pixels;
 use imageproc::pixelops::weighted_sum;
 use std::env;
 use std::path::Path;
@@ -38,19 +38,19 @@ fn main() {
 
     // Load a image::DynamicImage and convert it to a image::GrayImage
     let image = open(path)
-        .expect(&format!("Could not load image at {:?}", path))
+        .unwrap_or_else(|_| panic!("Could not load image at {:?}", path))
         .to_luma8();
 
     let blue = Rgb([0u8, 0u8, 255u8]);
 
     // Apply the color tint to every pixel in the grayscale image, producing a image::RgbImage
-    let tinted = map_colors(&image, |pix| tint(pix, blue));
+    let tinted = map_pixels(&image, |pix| tint(pix, blue));
     tinted.save(path.with_file_name("tinted.png")).unwrap();
 
     // Apply color gradient to each image pixel
     let black = Rgb([0u8, 0u8, 0u8]);
     let red = Rgb([255u8, 0u8, 0u8]);
     let yellow = Rgb([255u8, 255u8, 0u8]);
-    let gradient = map_colors(&image, |pix| color_gradient(pix, black, red, yellow));
+    let gradient = map_pixels(&image, |pix| color_gradient(pix, black, red, yellow));
     gradient.save(path.with_file_name("gradient.png")).unwrap();
 }

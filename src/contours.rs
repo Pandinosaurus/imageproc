@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 /// Whether a border of a foreground region borders an enclosing background region or a contained background region.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum BorderType {
-    /// A border between a foreground region and the backround region enclosing it.
+    /// A border between a foreground region and the background region enclosing it.
     /// All points in the border lie within the foreground region.
     Outer,
     /// A border between a foreground region and a background region contained within it.
@@ -106,18 +106,20 @@ where
                 continue;
             }
 
-            if let Some((adj, border_type)) =
-                if image_values[at(x, y)] == 1 && x > 0 && image_values[at(x - 1, y)] == 0 {
-                    Some((Point::new(x - 1, y), BorderType::Outer))
-                } else if image_values[at(x, y)] > 0 && x + 1 < width && image_values[at(x + 1, y)] == 0 {
-                    if image_values[at(x, y)] > 1 {
-                        parent_border_num = image_values[at(x, y)] as usize;
-                    }
-                    Some((Point::new(x + 1, y), BorderType::Hole))
-                } else {
-                    None
-                }
+            if let Some((adj, border_type)) = if image_values[at(x, y)] == 1
+                && x > 0
+                && image_values[at(x - 1, y)] == 0
             {
+                Some((Point::new(x - 1, y), BorderType::Outer))
+            } else if image_values[at(x, y)] > 0 && x + 1 < width && image_values[at(x + 1, y)] == 0
+            {
+                if image_values[at(x, y)] > 1 {
+                    parent_border_num = image_values[at(x, y)] as usize;
+                }
+                Some((Point::new(x + 1, y), BorderType::Hole))
+            } else {
+                None
+            } {
                 curr_border_num += 1;
 
                 let parent = if parent_border_num > 1 {
@@ -188,7 +190,7 @@ where
             }
 
             if image_values[at(x, y)] != 1 {
-                parent_border_num = image_values[at(x, y)].abs() as usize;
+                parent_border_num = image_values[at(x, y)].unsigned_abs() as usize;
             }
         }
     }
@@ -221,6 +223,7 @@ mod tests {
         assert_eq!(contour.parent, expected_parent);
     }
 
+    #[cfg_attr(miri, ignore = "slow")]
     #[test]
     fn test_contours_structured() {
         use crate::drawing::draw_polygon_mut;
@@ -445,6 +448,7 @@ mod tests {
         assert_eq!(contours[3].parent, None);
     }
 
+    #[cfg_attr(miri, ignore = "slow")]
     #[test]
     fn get_contours_approx_points() {
         use crate::drawing::draw_polygon_mut;

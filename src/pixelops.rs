@@ -1,8 +1,6 @@
 //! Pixel manipulations.
 
 use crate::definitions::Clamp;
-use crate::math::cast;
-use conv::ValueInto;
 use image::Pixel;
 
 /// Adds pixels with the given weights. Results are clamped to prevent arithmetical overflows.
@@ -24,7 +22,7 @@ use image::Pixel;
 /// ```
 pub fn weighted_sum<P: Pixel>(left: P, right: P, left_weight: f32, right_weight: f32) -> P
 where
-    P::Subpixel: ValueInto<f32> + Clamp<f32>,
+    P::Subpixel: Into<f32> + Clamp<f32>,
 {
     left.map2(&right, |p, q| {
         weighted_channel_sum(p, q, left_weight, right_weight)
@@ -50,7 +48,7 @@ where
 /// ```
 pub fn interpolate<P: Pixel>(left: P, right: P, left_weight: f32) -> P
 where
-    P::Subpixel: ValueInto<f32> + Clamp<f32>,
+    P::Subpixel: Into<f32> + Clamp<f32>,
 {
     weighted_sum(left, right, left_weight, 1.0 - left_weight)
 }
@@ -58,16 +56,14 @@ where
 #[inline(always)]
 fn weighted_channel_sum<C>(left: C, right: C, left_weight: f32, right_weight: f32) -> C
 where
-    C: ValueInto<f32> + Clamp<f32>,
+    C: Into<f32> + Clamp<f32>,
 {
-    Clamp::clamp(cast(left) * left_weight + cast(right) * right_weight)
+    Clamp::clamp(left.into() * left_weight + right.into() * right_weight)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{Luma, Rgb};
-    use test::{black_box, Bencher};
 
     #[test]
     fn test_weighted_channel_sum() {
@@ -78,6 +74,14 @@ mod tests {
         // Clamped
         assert_eq!(weighted_channel_sum(150u8, 150u8, 1.8, 0.8), 255u8);
     }
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod benches {
+    use super::*;
+    use image::{Luma, Rgb};
+    use test::{black_box, Bencher};
 
     #[bench]
     fn bench_weighted_sum_rgb(b: &mut Bencher) {

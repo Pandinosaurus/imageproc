@@ -5,7 +5,7 @@
 use crate::definitions::Image;
 use crate::drawing::draw_line_segment_mut;
 use crate::suppress::suppress_non_maximum;
-use image::{GenericImage, GenericImageView, GrayImage, ImageBuffer, Luma, Pixel};
+use image::{GenericImage, GenericImageView, GrayImage, Luma, Pixel};
 use std::f32;
 
 /// A detected line, in polar coordinates.
@@ -45,7 +45,7 @@ pub fn detect_lines(image: &GrayImage, options: LineDetectionOptions) -> Vec<Pol
     // Measure angles in degrees, and use bins of width 1 pixel and height 1 degree.
     // We use the convention that distances are positive for angles in (0, 180] and
     // negative for angles in [180, 360).
-    let mut acc: ImageBuffer<Luma<u32>, Vec<u32>> = ImageBuffer::new(2 * rmax as u32 + 1, 180u32);
+    let mut acc: Image<Luma<u32>> = Image::new(2 * rmax as u32 + 1, 180u32);
 
     // Precalculate values of (cos(m), sin(m))
     let lut: Vec<(f32, f32)> = (0..180u32)
@@ -104,10 +104,7 @@ where
     draw_polar_lines_mut(&mut out, lines, color);
     out
 }
-
-/// Draws each element of `lines` on `image` in the provided `color`.
-///
-/// See ./examples/hough.rs for example usage.
+#[doc=generate_mut_doc_comment!("draw_polar_lines")]
 pub fn draw_polar_lines_mut<P>(image: &mut Image<P>, lines: &[PolarLine], color: P)
 where
     P: Pixel,
@@ -130,7 +127,7 @@ where
 /// or `None` if the line and image bounding box are disjoint. The x value of an intersection
 /// point lies within the closed interval [0, image_width] and the y value within the closed
 /// interval [0, image_height].
-fn intersection_points(
+pub fn intersection_points(
     line: PolarLine,
     image_width: u32,
     image_height: u32,
@@ -170,9 +167,6 @@ fn intersection_points(
 
     if right_y >= 0.0 && right_y <= h {
         let right_intersect = (w, right_y);
-        if let Some(s) = start {
-            return Some((s, right_intersect));
-        }
         start = Some(right_intersect);
     }
 
@@ -205,8 +199,7 @@ fn intersection_points(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{GrayImage, ImageBuffer, Luma};
-    use test::{black_box, Bencher};
+    use image::{GrayImage, Luma};
 
     fn assert_points_eq(
         actual: Option<((f32, f32), (f32, f32))>,
@@ -517,6 +510,7 @@ mod tests {
 
     macro_rules! test_detect_line {
         ($name:ident, $r:expr, $angle:expr) => {
+            #[cfg_attr(miri, ignore = "slow")]
             #[test]
             fn $name() {
                 let options = LineDetectionOptions {
@@ -538,6 +532,14 @@ mod tests {
     test_detect_line!(detect_line_eps_135, 0.001, 135);
     // https://github.com/image-rs/imageproc/issues/280
     test_detect_line!(detect_line_neg10_120, -10.0, 120);
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod benches {
+    use super::*;
+    use image::{GrayImage, Luma};
+    use test::{black_box, Bencher};
 
     macro_rules! bench_detect_lines {
         ($name:ident, $r:expr, $angle:expr) => {
@@ -570,7 +572,7 @@ mod tests {
     bench_detect_lines!(bench_detect_line_neg10_120, -10.0, 120);
 
     fn chessboard(width: u32, height: u32) -> GrayImage {
-        ImageBuffer::from_fn(width, height, |x, y| {
+        GrayImage::from_fn(width, height, |x, y| {
             if (x + y) % 2 == 0 {
                 Luma([255u8])
             } else {

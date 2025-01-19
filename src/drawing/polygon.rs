@@ -2,10 +2,124 @@ use crate::definitions::Image;
 use crate::drawing::line::{draw_antialiased_line_segment_mut, draw_line_segment_mut};
 use crate::drawing::Canvas;
 use crate::point::Point;
-use image::{GenericImage, ImageBuffer};
+use image::GenericImage;
 use std::cmp::{max, min};
-use std::f32;
-use std::i32;
+
+/// Draws a polygon and its contents on an image.
+///
+/// Draws as much of a filled polygon as lies within image bounds. The provided
+/// list of points can be an open or closed path, i.e. if the first and last points are
+/// not equal, the path will be closed anyway.
+/// An implicit edge will be added from the last to the first point if they are not equal.
+pub fn draw_polygon<I>(image: &I, poly: &[Point<i32>], color: I::Pixel) -> Image<I::Pixel>
+where
+    I: GenericImage,
+{
+    draw_polygon_with(image, poly, color, draw_line_segment_mut)
+}
+#[doc=generate_mut_doc_comment!("draw_polygon")]
+pub fn draw_polygon_mut<C>(canvas: &mut C, poly: &[Point<i32>], color: C::Pixel)
+where
+    C: Canvas,
+{
+    draw_polygon_with_mut(canvas, poly, color, draw_line_segment_mut);
+}
+
+/// Draws an anti-aliased polygon polygon and its contents on an image.
+///
+/// Draws as much of a filled polygon as lies within image bounds. The provided
+/// list of points can be an open or closed path, i.e. if the first and last points are
+/// not equal, the path will be closed anyway.
+/// An implicit edge will be added from the last to the first point if they are not equal.
+///
+/// The parameters of blend are (line color, original color, line weight).
+/// Consider using [`interpolate()`](crate::pixelops::interpolate) for blend.
+pub fn draw_antialiased_polygon<I, B>(
+    image: &I,
+    poly: &[Point<i32>],
+    color: I::Pixel,
+    blend: B,
+) -> Image<I::Pixel>
+where
+    I: GenericImage,
+    B: Fn(I::Pixel, I::Pixel, f32) -> I::Pixel,
+{
+    draw_polygon_with(image, poly, color, |image, start, end, color| {
+        draw_antialiased_line_segment_mut(
+            image,
+            (start.0 as i32, start.1 as i32),
+            (end.0 as i32, end.1 as i32),
+            color,
+            &blend,
+        )
+    })
+}
+#[doc=generate_mut_doc_comment!("draw_antialiased_polygon")]
+pub fn draw_antialiased_polygon_mut<I, B>(
+    image: &mut I,
+    poly: &[Point<i32>],
+    color: I::Pixel,
+    blend: B,
+) where
+    I: GenericImage,
+    B: Fn(I::Pixel, I::Pixel, f32) -> I::Pixel,
+{
+    draw_polygon_with_mut(image, poly, color, |image, start, end, color| {
+        draw_antialiased_line_segment_mut(
+            image,
+            (start.0 as i32, start.1 as i32),
+            (end.0 as i32, end.1 as i32),
+            color,
+            &blend,
+        )
+    });
+}
+
+/// Draws the outline of a polygon on an image in place.
+///
+/// Draws as much of the outline of the polygon as lies within image bounds. The provided
+/// list of points should be in polygon order and can be an open or closed path, i.e. if
+/// the first and last points are not equal, the path will be closed anyway.
+/// The edges of the polygon will be drawn in the order that they are provided, and an
+/// implicit edge will be added from the last to the first point if they are not equal.
+pub fn draw_hollow_polygon<I>(
+    image: &mut I,
+    poly: &[Point<f32>],
+    color: I::Pixel,
+) -> Image<I::Pixel>
+where
+    I: GenericImage,
+{
+    let mut out = Image::new(image.width(), image.height());
+    out.copy_from(image, 0, 0).unwrap();
+    draw_hollow_polygon_mut(&mut out, poly, color);
+    out
+}
+#[doc=generate_mut_doc_comment!("draw_hollow_polygon")]
+pub fn draw_hollow_polygon_mut<C>(canvas: &mut C, poly: &[Point<f32>], color: C::Pixel)
+where
+    C: Canvas,
+{
+    if poly.is_empty() {
+        return;
+    }
+    if poly.len() < 2 {
+        panic!("Polygon only has 1 point, but at least two are needed.");
+    }
+    for window in poly.windows(2) {
+        crate::drawing::draw_line_segment_mut(
+            canvas,
+            (window[0].x, window[0].y),
+            (window[1].x, window[1].y),
+            color,
+        );
+    }
+    let first = poly[0];
+    let last = poly[poly.len() - 1];
+    if first != last {
+        crate::drawing::draw_line_segment_mut(canvas, (first.x, first.y), (last.x, last.y), color);
+    }
+}
 
 #[must_use = "the function does not modify the original image"]
 fn draw_polygon_with<I, L>(
@@ -16,9 +130,9 @@ fn draw_polygon_with<I, L>(
 ) -> Image<I::Pixel>
 where
     I: GenericImage,
-    L: Fn(&mut Image<I::Pixel>, (f32, f32), (f32, f32), I::Pixel) -> (),
+    L: Fn(&mut Image<I::Pixel>, (f32, f32), (f32, f32), I::Pixel),
 {
-    let mut out = ImageBuffer::new(image.width(), image.height());
+    let mut out = Image::new(image.width(), image.height());
     out.copy_from(image, 0, 0).unwrap();
     draw_polygon_with_mut(&mut out, poly, color, plotter);
     out
@@ -27,17 +141,10 @@ where
 fn draw_polygon_with_mut<C, L>(canvas: &mut C, poly: &[Point<i32>], color: C::Pixel, plotter: L)
 where
     C: Canvas,
-    L: Fn(&mut C, (f32, f32), (f32, f32), C::Pixel) -> (),
+    L: Fn(&mut C, (f32, f32), (f32, f32), C::Pixel),
 {
     if poly.is_empty() {
         return;
-    }
-    if poly[0] == poly[poly.len() - 1] {
-        panic!(
-            "First point {:?} == last point {:?}",
-            poly[0],
-            poly[poly.len() - 1]
-        );
     }
 
     let mut y_min = i32::MAX;
@@ -54,7 +161,11 @@ where
     y_max = max(0, min(y_max, height as i32 - 1));
 
     let mut closed: Vec<Point<i32>> = poly.to_vec();
-    closed.push(poly[0]);
+    let first = poly[0];
+    let last = poly[poly.len() - 1];
+    if first != last {
+        closed.push(first);
+    }
 
     let edges: Vec<&[Point<i32>]> = closed.windows(2).collect();
     let mut intersections = Vec::new();
@@ -107,146 +218,4 @@ where
         let end = (edge[1].x as f32, edge[1].y as f32);
         plotter(canvas, start, end, color);
     }
-}
-
-/// Draws a polygon and its contents on a new copy of an image.
-///
-/// Draws as much of a filled polygon as lies within image bounds. The provided
-/// list of points should be an open path, i.e. the first and last points must not be equal.
-/// An implicit edge is added from the last to the first point in the slice.
-pub fn draw_polygon<I>(image: &I, poly: &[Point<i32>], color: I::Pixel) -> Image<I::Pixel>
-where
-    I: GenericImage,
-{
-    draw_polygon_with(image, poly, color, draw_line_segment_mut)
-}
-
-/// Draws a polygon and its contents on an image in place.
-///
-/// Draws as much of a filled polygon as lies within image bounds. The provided
-/// list of points should be an open path, i.e. the first and last points must not be equal.
-/// An implicit edge is added from the last to the first point in the slice.
-pub fn draw_polygon_mut<C>(canvas: &mut C, poly: &[Point<i32>], color: C::Pixel)
-where
-    C: Canvas,
-{
-    draw_polygon_with_mut(canvas, poly, color, draw_line_segment_mut);
-}
-
-/// Draws an anti-aliased polygon polygon and its contents on a new copy of an image.
-///
-/// Draws as much of a filled polygon as lies within image bounds. The provided
-/// list of points should be an open path, i.e. the first and last points must not be equal.
-/// An implicit edge is added from the last to the first point in the slice.
-///
-/// The parameters of blend are (line color, original color, line weight).
-/// Consider using [`interpolate`](fn.interpolate.html) for blend.
-pub fn draw_antialiased_polygon<I, B>(
-    image: &I,
-    poly: &[Point<i32>],
-    color: I::Pixel,
-    blend: B,
-) -> Image<I::Pixel>
-where
-    I: GenericImage,
-    B: Fn(I::Pixel, I::Pixel, f32) -> I::Pixel,
-{
-    draw_polygon_with(image, poly, color, |image, start, end, color| {
-        draw_antialiased_line_segment_mut(
-            image,
-            (start.0 as i32, start.1 as i32),
-            (end.0 as i32, end.1 as i32),
-            color,
-            &blend,
-        )
-    })
-}
-
-/// Draws an anti-aliased polygon and its contents on an image in place.
-///
-/// Draws as much of a filled polygon as lies within image bounds. The provided
-/// list of points should be an open path, i.e. the first and last points must not be equal.
-/// An implicit edge is added from the last to the first point in the slice.
-///
-/// The parameters of blend are (line color, original color, line weight).
-/// Consider using [`interpolate`](fn.interpolate.html) for blend.
-pub fn draw_antialiased_polygon_mut<I, B>(
-    image: &mut I,
-    poly: &[Point<i32>],
-    color: I::Pixel,
-    blend: B,
-) where
-    I: GenericImage,
-    B: Fn(I::Pixel, I::Pixel, f32) -> I::Pixel,
-{
-    draw_polygon_with_mut(image, poly, color, |image, start, end, color| {
-        draw_antialiased_line_segment_mut(
-            image,
-            (start.0 as i32, start.1 as i32),
-            (end.0 as i32, end.1 as i32),
-            color,
-            &blend,
-        )
-    });
-}
-
-/// Draws the outline of a polygon on an image in place.
-///
-/// Draws as much of the outline of the polygon as lies within image bounds. The provided
-/// list of points should be in polygon order and be an open path, i.e. the first
-/// and last points must not be equal. The edges of the polygon will be drawn in the order
-/// that they are provided, and an implicit edge will be added from the last to the first
-/// point in the slice.
-pub fn draw_hollow_polygon<I>(
-    image: &mut I,
-    poly: &[Point<f32>],
-    color: I::Pixel,
-) -> Image<I::Pixel>
-where
-    I: GenericImage,
-{
-    let mut out = ImageBuffer::new(image.width(), image.height());
-    out.copy_from(image, 0, 0).unwrap();
-    draw_hollow_polygon_mut(&mut out, poly, color);
-    out
-}
-
-/// Draws the outline of a polygon on an image in place.
-///
-/// Draws as much of the outline of the polygon as lies within image bounds. The provided
-/// list of points should be in polygon order and be an open path, i.e. the first
-/// and last points must not be equal. The edges of the polygon will be drawn in the order
-/// that they are provided, and an implicit edge will be added from the last to the first
-/// point in the slice.
-pub fn draw_hollow_polygon_mut<C>(canvas: &mut C, poly: &[Point<f32>], color: C::Pixel)
-where
-    C: Canvas,
-{
-    if poly.is_empty() {
-        return;
-    }
-    if poly.len() < 2 {
-        panic!(
-            "Polygon only has {} points, but at least two are needed.",
-            poly.len(),
-        );
-    }
-    if poly[0] == poly[poly.len() - 1] {
-        panic!(
-            "First point {:?} == last point {:?}",
-            poly[0],
-            poly[poly.len() - 1]
-        );
-    }
-    for window in poly.windows(2) {
-        crate::drawing::draw_line_segment_mut(
-            canvas,
-            (window[0].x, window[0].y),
-            (window[1].x, window[1].y),
-            color,
-        );
-    }
-    let first = poly[0];
-    let last = poly.iter().last().unwrap();
-    crate::drawing::draw_line_segment_mut(canvas, (first.x, first.y), (last.x, last.y), color);
 }

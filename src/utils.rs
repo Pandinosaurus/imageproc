@@ -1,16 +1,16 @@
 //! Utils for testing and debugging.
 
+use crate::definitions::Image;
 use image::{
     open, DynamicImage, GenericImage, GenericImageView, GrayImage, Luma, Pixel, Rgb, RgbImage,
 };
-
 use itertools::Itertools;
+
 use std::cmp::{max, min};
 use std::collections::HashSet;
-use std::fmt;
-use std::fmt::Write;
+use std::hint::black_box;
 use std::path::Path;
-use std::u32;
+use std::{fmt, fmt::Write};
 
 /// Helper for defining greyscale images.
 ///
@@ -89,8 +89,10 @@ macro_rules! gray_image {
         // Empty image with the given channel type
     (type: $channel_type:ty) => {
         {
-            use image::{ImageBuffer, Luma};
-            ImageBuffer::<Luma<$channel_type>, Vec<$channel_type>>::new(0, 0)
+            use image::Luma;
+            use $crate::definitions::Image;
+
+            Image::<Luma<$channel_type>>::new(0, 0)
         }
     };
     // Non-empty image of default channel type u8
@@ -100,7 +102,8 @@ macro_rules! gray_image {
     // Non-empty image of given channel type
     (type: $channel_type:ty, $( $( $x: expr ),*);*) => {
         {
-            use image::{ImageBuffer, Luma};
+            use image::Luma;
+            use $crate::definitions::Image;
 
             let nested_array = [ $( [ $($x),* ] ),* ];
             let height = nested_array.len() as u32;
@@ -111,7 +114,7 @@ macro_rules! gray_image {
                 .cloned()
                 .collect();
 
-            ImageBuffer::<Luma<$channel_type>, Vec<$channel_type>>::from_raw(width, height, flat_array)
+            Image::<Luma<$channel_type>>::from_raw(width, height, flat_array)
                 .unwrap()
         }
     }
@@ -191,8 +194,10 @@ macro_rules! rgb_image {
     // Empty image with the given channel type
     (type: $channel_type:ty) => {
         {
-            use image::{ImageBuffer, Rgb};
-            ImageBuffer::<Rgb<$channel_type>, Vec<$channel_type>>::new(0, 0)
+            use image::Rgb;
+            use $crate::definitions::Image;
+
+            Image::<Rgb<$channel_type>>::new(0, 0)
         }
     };
     // Non-empty image of default channel type u8
@@ -202,7 +207,9 @@ macro_rules! rgb_image {
     // Non-empty image of given channel type
     (type: $channel_type:ty, $( $( [$r: expr, $g: expr, $b: expr]),*);*) => {
         {
-            use image::{ImageBuffer, Rgb};
+            use image::Rgb;
+            use $crate::definitions::Image;
+
             let nested_array = [$( [ $([$r, $g, $b]),*]),*];
             let height = nested_array.len() as u32;
             let width = nested_array[0].len() as u32;
@@ -212,7 +219,7 @@ macro_rules! rgb_image {
                 .cloned()
                 .collect();
 
-            ImageBuffer::<Rgb<$channel_type>, Vec<$channel_type>>::from_raw(width, height, flat_array)
+            Image::<Rgb<$channel_type>>::from_raw(width, height, flat_array)
                 .unwrap()
         }
     }
@@ -292,8 +299,10 @@ macro_rules! rgba_image {
     // Empty image with the given channel type
     (type: $channel_type:ty) => {
         {
-            use image::{ImageBuffer, Rgba};
-            ImageBuffer::<Rgba<$channel_type>, Vec<$channel_type>>::new(0, 0)
+            use image::Rgba;
+            use $crate::definitions::Image;
+
+            Image::<Rgba<$channel_type>>::new(0, 0)
         }
     };
     // Non-empty image of default channel type u8
@@ -303,7 +312,9 @@ macro_rules! rgba_image {
     // Non-empty image of given channel type
     (type: $channel_type:ty, $( $( [$r: expr, $g: expr, $b: expr, $a: expr]),*);*) => {
         {
-            use image::{ImageBuffer, Rgba};
+            use image::Rgba;
+            use $crate::definitions::Image;
+
             let nested_array = [$( [ $([$r, $g, $b, $a]),*]),*];
             let height = nested_array.len() as u32;
             let width = nested_array[0].len() as u32;
@@ -313,7 +324,7 @@ macro_rules! rgba_image {
                 .cloned()
                 .collect();
 
-            ImageBuffer::<Rgba<$channel_type>, Vec<$channel_type>>::from_raw(width, height, flat_array)
+            Image::<Rgba<$channel_type>>::from_raw(width, height, flat_array)
                 .unwrap()
         }
     }
@@ -332,7 +343,7 @@ where
 }
 
 /// Human readable description of some of the pixels that differ
-/// signifcantly (according to provided function) between left
+/// significantly (according to provided function) between left
 /// and right, or None if all pixels match.
 pub fn significant_pixel_diff_summary<I, J, F, P>(
     actual: &I,
@@ -651,7 +662,7 @@ fn colored(s: &str, c: Color) -> String {
 
 /// Loads image at given path, panicking on failure.
 pub fn load_image_or_panic<P: AsRef<Path> + fmt::Debug>(path: P) -> DynamicImage {
-    open(path.as_ref()).expect(&format!("Could not load image at {:?}", path.as_ref()))
+    open(path.as_ref()).unwrap_or_else(|_| panic!("Could not load image at {:?}", path.as_ref()))
 }
 
 /// Gray image to use in benchmarks. This is neither noise nor
@@ -665,7 +676,14 @@ pub fn gray_bench_image(width: u32, height: u32) -> GrayImage {
             image.put_pixel(x, y, Luma([intensity]));
         }
     }
-    image
+    black_box(image)
+}
+
+/// `Luma<f32>` image to use in benchmarks. See comment on `gray_bench_image`.
+pub fn luma32f_bench_image(width: u32, height: u32) -> Image<Luma<f32>> {
+    use image::DynamicImage;
+    let img = gray_bench_image(width, height);
+    DynamicImage::ImageLuma8(img).to_luma32f()
 }
 
 /// RGB image to use in benchmarks. See comment on `gray_bench_image`.
@@ -680,7 +698,7 @@ pub fn rgb_bench_image(width: u32, height: u32) -> RgbImage {
             image.put_pixel(x, y, Rgb([r, g, b]));
         }
     }
-    image
+    black_box(image)
 }
 
 #[cfg(test)]
